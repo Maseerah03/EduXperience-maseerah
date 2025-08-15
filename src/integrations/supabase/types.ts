@@ -219,7 +219,15 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "student_profiles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          }
+        ]
       }
       subject_categories: {
         Row: {
@@ -274,6 +282,355 @@ export type Database = {
           },
         ]
       }
+      notifications: {
+        Row: {
+          id: string
+          user_id: string
+          title: string
+          message: string
+          type: string
+          read: boolean
+          data: Json | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          title: string
+          message: string
+          type?: string
+          read?: boolean
+          data?: Json | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          title?: string
+          message?: string
+          type?: string
+          read?: boolean
+          data?: Json | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notifications_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "auth.users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      reviews: {
+        Row: {
+          id: string
+          tutor_id: string
+          student_id: string
+          rating: number
+          review_text: string | null
+          subject_taught: string | null
+          class_type: string | null
+          class_date: string | null
+          anonymous: boolean
+          verified_student: boolean
+          helpful_votes: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          tutor_id: string
+          student_id: string
+          rating: number
+          review_text?: string | null
+          subject_taught?: string | null
+          class_type?: string | null
+          class_date?: string | null
+          anonymous?: boolean
+          verified_student?: boolean
+          helpful_votes?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          tutor_id?: string
+          student_id?: string
+          rating?: number
+          review_text?: string | null
+          subject_taught?: string | null
+          class_type?: string | null
+          class_date?: string | null
+          anonymous?: boolean
+          verified_student?: boolean
+          helpful_votes?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reviews_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reviews_student_id_fkey"
+            columns: ["student_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      tutor_content: {
+        Row: {
+          id: string
+          tutor_id: string
+          content_type: string
+          title: string
+          description: string | null
+          file_url: string | null
+          thumbnail_url: string | null
+          duration: string | null
+          file_size: string | null
+          views: number
+          downloads: number
+          is_public: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          tutor_id: string
+          content_type: string
+          title: string
+          description?: string | null
+          file_url?: string | null
+          thumbnail_url?: string | null
+          duration?: string | null
+          file_size?: string | null
+          views?: number
+          downloads?: number
+          is_public?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          tutor_id?: string
+          content_type?: string
+          title?: string
+          description?: string | null
+          file_url?: string | null
+          thumbnail_url?: string | null
+          duration?: string | null
+          file_size?: string | null
+          views?: number
+          downloads?: number
+          is_public?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_content_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      tutor_certificates: {
+        Row: {
+          id: string
+          tutor_id: string
+          title: string
+          description: string | null
+          certificate_type: string
+          issuing_organization: string | null
+          issue_date: string | null
+          expiry_date: string | null
+          certificate_url: string | null
+          verification_status: string
+          verified_by: string | null
+          verified_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          tutor_id: string
+          title: string
+          description?: string | null
+          certificate_type: string
+          issuing_organization?: string | null
+          issue_date?: string | null
+          expiry_date?: string | null
+          certificate_url?: string | null
+          verification_status?: string
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          tutor_id?: string
+          title?: string
+          description?: string | null
+          certificate_type?: string
+          issuing_organization?: string | null
+          issue_date?: string | null
+          expiry_date?: string | null
+          certificate_url?: string | null
+          verification_status?: string
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_certificates_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tutor_certificates_verified_by_fkey"
+            columns: ["verified_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      tutor_verifications: {
+        Row: {
+          id: string
+          tutor_id: string
+          verification_type: string
+          status: string
+          verified_by: string | null
+          verified_at: string | null
+          verification_notes: string | null
+          document_url: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          tutor_id: string
+          verification_type: string
+          status?: string
+          verified_by?: string | null
+          verified_at?: string | null
+          verification_notes?: string | null
+          document_url?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          tutor_id?: string
+          verification_type?: string
+          status?: string
+          verified_by?: string | null
+          verified_at?: string | null
+          verification_notes?: string | null
+          document_url?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_verifications_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tutor_verifications_verified_by_fkey"
+            columns: ["verified_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      tutor_achievements: {
+        Row: {
+          id: string
+          tutor_id: string
+          title: string
+          description: string | null
+          achievement_type: string
+          year: number | null
+          organization: string | null
+          achievement_url: string | null
+          is_verified: boolean
+          verified_by: string | null
+          verified_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          tutor_id: string
+          title: string
+          description?: string | null
+          achievement_type: string
+          year?: number | null
+          organization?: string | null
+          achievement_url?: string | null
+          is_verified?: boolean
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          tutor_id?: string
+          title?: string
+          description?: string | null
+          achievement_type?: string
+          year?: number | null
+          organization?: string | null
+          achievement_url?: string | null
+          is_verified?: boolean
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tutor_achievements_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tutor_achievements_verified_by_fkey"
+            columns: ["verified_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
       tutor_profiles: {
         Row: {
           availability: Json | null
@@ -283,8 +640,10 @@ export type Database = {
           hourly_rate_max: number | null
           hourly_rate_min: number | null
           id: string
+          profile_completion_percentage: number | null
           qualifications: Json | null
           rating: number | null
+          response_time_hours: number | null
           teaching_mode: string | null
           total_reviews: number | null
           updated_at: string
@@ -299,8 +658,10 @@ export type Database = {
           hourly_rate_max?: number | null
           hourly_rate_min?: number | null
           id?: string
+          profile_completion_percentage?: number | null
           qualifications?: Json | null
           rating?: number | null
+          response_time_hours?: number | null
           teaching_mode?: string | null
           total_reviews?: number | null
           updated_at?: string
@@ -315,15 +676,25 @@ export type Database = {
           hourly_rate_max?: number | null
           hourly_rate_min?: number | null
           id?: string
+          profile_completion_percentage?: number | null
           qualifications?: Json | null
           rating?: number | null
+          response_time_hours?: number | null
           teaching_mode?: string | null
           total_reviews?: number | null
           updated_at?: string
           user_id?: string
           verified?: boolean | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "tutor_profiles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          }
+        ]
       }
     }
     Views: {

@@ -1,93 +1,168 @@
 import { useState, useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+import { saveCredentials, loadSavedCredentials, clearSavedCredentials, getSavedEmails, getCredentialStats } from "@/lib/credentials";
+import { getPendingTutorProfile, getPendingStudentProfile, createTutorProfileAfterVerification, createStudentProfileAfterVerification, clearPendingTutorProfile, clearPendingStudentProfile } from "@/lib/profile-creation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Header } from "@/components/layout/Header";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Eye, EyeOff, Mail, Lock, ArrowLeft, Loader2 } from "lucide-react";
-import { Link } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
-import { 
-  createTutorProfileAfterVerification, 
-  getPendingTutorProfile, 
-  clearPendingTutorProfile,
-  createStudentProfileAfterVerification,
-  getPendingStudentProfile,
-  clearPendingStudentProfile
-} from "@/lib/profile-creation";
-import { useToast } from "@/hooks/use-toast";
+import { Header } from "@/components/layout/Header";
+import { Badge } from "@/components/ui/badge";
 
 export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
   });
+  const [savedEmails, setSavedEmails] = useState<string[]>([]);
+  const [selectedSavedEmail, setSelectedSavedEmail] = useState<string>("");
   const { toast } = useToast();
+  const navigate = useNavigate();
 
-  // Check for pending profile creation on component mount
+  // Test localStorage functionality immediately
   useEffect(() => {
-    const checkPendingProfile = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user && user.email_confirmed_at) {
-        // Check for pending tutor profile
-        const pendingTutor = getPendingTutorProfile();
-        if (pendingTutor) {
-          setIsLoading(true);
-          const result = await createTutorProfileAfterVerification(user.id, pendingTutor.formData);
-          if (result.success) {
-            clearPendingTutorProfile();
-            toast({
-              title: "Profile Created Successfully!",
-              description: result.message,
-            });
-          } else {
-            toast({
-              title: "Profile Creation Failed",
-              description: "There was an issue creating your profile. Please contact support.",
-              variant: "destructive",
-            });
-          }
-          setIsLoading(false);
-        }
+    console.log('=== TESTING LOCALSTORAGE ===');
+    try {
+      const testKey = '__test_localStorage__';
+      localStorage.setItem(testKey, 'test_value');
+      const testValue = localStorage.getItem(testKey);
+      localStorage.removeItem(testKey);
+      console.log('localStorage test:', testValue === 'test_value' ? 'PASSED' : 'FAILED');
+      console.log('localStorage available:', typeof localStorage !== 'undefined');
+    } catch (error) {
+      console.error('localStorage test failed:', error);
+    }
+  }, []);
 
-        // Check for pending student profile
-        const pendingStudent = getPendingStudentProfile();
-        if (pendingStudent) {
-          setIsLoading(true);
-          const result = await createStudentProfileAfterVerification(user.id, pendingStudent.formData);
-          if (result.success) {
-            clearPendingStudentProfile();
-            toast({
-              title: "Profile Created Successfully!",
-              description: result.message,
-            });
+  // Check for saved credentials and pending profile creation on component mount
+  useEffect(() => {
+    console.log('=== COMPONENT MOUNT - CHECKING FOR SAVED CREDENTIALS ===');
+    
+    // Load saved emails for the dropdown
+    const emails = getSavedEmails();
+    setSavedEmails(emails);
+    console.log('Saved emails found:', emails);
+    
+    // Load most recent credentials if any exist
+    const savedCredentials = loadSavedCredentials();
+    if (savedCredentials) {
+      console.log('=== FOUND SAVED CREDENTIALS ===');
+      console.log('Auto-filling form with most recent credentials...');
+      
+      // Update React state
+      setFormData({
+        email: savedCredentials.email,
+        password: savedCredentials.password,
+      });
+      setRememberMe(true);
+      setSelectedSavedEmail(savedCredentials.email);
+      
+      console.log('✅ Form auto-filled successfully');
+      console.log('Form data after auto-fill:', { email: savedCredentials.email, password: savedCredentials.password });
+      console.log('Remember me after auto-fill:', true);
+      console.log('Selected saved email:', savedCredentials.email);
           } else {
-            toast({
-              title: "Profile Creation Failed",
-              description: "There was an issue creating your profile. Please contact support.",
-              variant: "destructive",
-            });
-          }
-          setIsLoading(false);
-        }
-      }
-    };
+      console.log('❌ No saved credentials found');
+      console.log('This means either:');
+      console.log('1. No credentials were ever saved');
+      console.log('2. Credentials were cleared (e.g., during logout)');
+      console.log('3. There was an error loading them');
+    }
+  }, []); // Empty dependency array - runs only on mount
 
-    checkPendingProfile();
-  }, [toast]);
+  // Debug: watch for formData changes
+  useEffect(() => {
+    console.log('=== FORM DATA CHANGED ===');
+    console.log('New formData:', formData);
+    console.log('New rememberMe:', rememberMe);
+  }, [formData, rememberMe]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    console.log(`=== INPUT CHANGE: ${name} ===`);
+    console.log('Previous value:', formData[name as keyof typeof formData]);
+    console.log('New value:', value);
+    console.log('Value type:', typeof value);
+    console.log('Value length:', value.length);
+    
+    setFormData(prev => ({
+      ...prev,
+      [name]: value,
+    }));
+    
+    console.log('Form data after update:', { ...formData, [name]: value });
+  };
+
+  // Handle account selection from dropdown
+  const handleAccountSelection = (email: string) => {
+    console.log('=== ACCOUNT SELECTION ===');
+    console.log('Selected email:', email);
+    
+    if (email === "new") {
+      // Clear form for new account
+      setFormData({ email: "", password: "" });
+      setSelectedSavedEmail("");
+      console.log('✅ Form cleared for new account');
+    } else {
+      // Load selected account credentials
+      const selectedCredentials = loadSavedCredentials(email);
+      if (selectedCredentials) {
     setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
+          email: selectedCredentials.email,
+          password: selectedCredentials.password,
+        });
+        setSelectedSavedEmail(email);
+        setRememberMe(true);
+        console.log('✅ Loaded credentials for:', email);
+      } else {
+        console.log('❌ No credentials found for:', email);
+      }
+    }
+  };
+
+  // Clear specific account credentials
+  const handleClearAccount = (email: string) => {
+    console.log('=== CLEARING ACCOUNT ===');
+    console.log('Clearing credentials for:', email);
+    
+    clearSavedCredentials(email);
+    
+    // Update saved emails list
+    const updatedEmails = getSavedEmails();
+    setSavedEmails(updatedEmails);
+    
+    // If we cleared the currently selected account, clear the form
+    if (selectedSavedEmail === email) {
+      setFormData({ email: "", password: "" });
+      setSelectedSavedEmail("");
+      setRememberMe(false);
+    }
+    
+    toast({
+      title: "Account Cleared",
+      description: `Credentials for ${email} have been removed.`,
     });
+    
+    console.log('✅ Account cleared successfully');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    
+    console.log('=== FORM SUBMISSION START ===');
+    console.log('Remember me checkbox checked:', rememberMe);
+    console.log('Form data:', formData);
+    console.log('Form data email:', formData.email);
+    console.log('Form data password exists:', !!formData.password);
+    console.log('Form data password length:', formData.password?.length || 0);
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -100,14 +175,62 @@ export default function Login() {
       }
 
       if (data.user) {
+        console.log('=== LOGIN SUCCESSFUL ===');
+        console.log('User logged in successfully');
+        console.log('User email:', data.user.email);
+        
+        // Handle remember me functionality
+        if (rememberMe) {
+          console.log('✅ Remember me is checked - saving credentials...');
+          console.log('About to call saveCredentials with:', formData.email, formData.password ? 'PASSWORD_EXISTS' : 'NO_PASSWORD');
+          console.log('Password value type:', typeof formData.password);
+          console.log('Password value:', formData.password);
+          
+          try {
+            saveCredentials(formData.email, formData.password);
+            console.log('✅ saveCredentials function completed successfully');
+            
+            // Immediately verify what was saved
+            const verifyRememberMe = localStorage.getItem('eduxperience_remember_me');
+            const verifyEmail = localStorage.getItem('eduxperience_saved_email');
+            const verifyPassword = localStorage.getItem('eduxperience_saved_password');
+            
+            console.log('=== IMMEDIATE VERIFICATION ===');
+            console.log('- REMEMBER_ME_KEY:', verifyRememberMe);
+            console.log('- SAVED_EMAIL_KEY:', verifyEmail);
+            console.log('- SAVED_PASSWORD_KEY:', verifyPassword ? 'EXISTS' : 'NOT FOUND');
+            
+            toast({
+              title: "Credentials Saved",
+              description: "Your login information has been saved for future use.",
+            });
+          } catch (error) {
+            console.error('❌ Error saving credentials:', error);
+            toast({
+              title: "Warning",
+              description: "Could not save credentials. Please check your browser settings.",
+              variant: "destructive",
+            });
+          }
+        } else {
+          console.log('❌ Remember me is not checked - clearing saved credentials...');
+          clearSavedCredentials();
+        }
+
         toast({
           title: "Login Successful!",
           description: "Welcome back to EduXperience.",
         });
+
+        // Add a delay to ensure credentials are saved before any redirect
+        console.log('=== WAITING BEFORE REDIRECT ===');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log('=== REDIRECT DELAY COMPLETE ===');
         
         // Check for pending profile creation
         const pendingTutor = getPendingTutorProfile();
         if (pendingTutor && data.user.email_confirmed_at) {
+          console.log('=== CREATING TUTOR PROFILE ===');
           const result = await createTutorProfileAfterVerification(data.user.id, pendingTutor.formData);
           if (result.success) {
             clearPendingTutorProfile();
@@ -116,10 +239,12 @@ export default function Login() {
               description: result.message,
             });
           }
+          console.log('=== TUTOR PROFILE CREATION COMPLETE ===');
         }
 
         const pendingStudent = getPendingStudentProfile();
         if (pendingStudent && data.user.email_confirmed_at) {
+          console.log('=== CREATING STUDENT PROFILE ===');
           const result = await createStudentProfileAfterVerification(data.user.id, pendingStudent.formData);
           if (result.success) {
             clearPendingStudentProfile();
@@ -128,10 +253,62 @@ export default function Login() {
               description: result.message,
             });
           }
+          console.log('=== STUDENT PROFILE CREATION COMPLETE ===');
         }
         
-        // Redirect to home page or dashboard
-        window.location.href = '/';
+        // Check credentials before profile fetch
+        console.log('=== CHECKING CREDENTIALS BEFORE PROFILE FETCH ===');
+        const beforeProfileCheck = localStorage.getItem('eduxperience_remember_me');
+        console.log('Credentials before profile fetch:', beforeProfileCheck ? 'EXIST' : 'NOT FOUND');
+        
+        // Get user's role and redirect accordingly
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('user_id', data.user.id)
+          .single();
+
+        if (profileError) {
+          console.error('Error fetching user profile:', profileError);
+          // If profile doesn't exist, redirect to home page
+          console.log('Redirecting to home page due to profile error...');
+          console.log('=== FINAL CREDENTIAL CHECK BEFORE REDIRECT ===');
+          const finalCheck = localStorage.getItem('eduxperience_remember_me');
+          console.log('Final credentials check:', finalCheck ? 'EXIST' : 'NOT FOUND');
+          window.location.href = '/';
+        } else if (profileData) {
+          // Redirect based on user role
+          console.log('Redirecting based on user role:', profileData.role);
+          console.log('=== FINAL CREDENTIAL CHECK BEFORE REDIRECT ===');
+          const finalCheck = localStorage.getItem('eduxperience_remember_me');
+          console.log('Final credentials check:', finalCheck ? 'EXIST' : 'NOT FOUND');
+          
+          switch (profileData.role) {
+            case 'student':
+              window.location.href = '/student-dashboard';
+              break;
+            case 'tutor':
+              window.location.href = '/tutor-dashboard';
+              break;
+            case 'institution':
+              // TODO: Add institution dashboard route when available
+              window.location.href = '/';
+              break;
+            case 'admin':
+              // TODO: Add admin dashboard route when available
+              window.location.href = '/';
+              break;
+            default:
+              window.location.href = '/';
+          }
+        } else {
+          // No profile found, redirect to home page
+          console.log('No profile found, redirecting to home page...');
+          console.log('=== FINAL CREDENTIAL CHECK BEFORE REDIRECT ===');
+          const finalCheck = localStorage.getItem('eduxperience_remember_me');
+          console.log('Final credentials check:', finalCheck ? 'EXIST' : 'NOT FOUND');
+          window.location.href = '/';
+        }
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -169,9 +346,33 @@ export default function Login() {
 
             <form onSubmit={handleSubmit}>
               <CardContent className="space-y-6">
+                <div className="space-y-4">
+                  {/* Account Selection Dropdown */}
+                  {savedEmails.length > 0 && (
+                    <div className="space-y-2">
+                      <Label htmlFor="account-select" className="text-sm font-medium text-gray-700">
+                        Choose Saved Account
+                      </Label>
+                      <Select value={selectedSavedEmail} onValueChange={handleAccountSelection}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select an account or add new" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="new">➕ Add New Account</SelectItem>
+                          {savedEmails.map((email) => (
+                            <SelectItem key={email} value={email}>
+                              {email}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  {/* Email Field */}
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-sm font-medium">
-                    Email Address
+                    <Label htmlFor="email" className="text-sm font-medium text-gray-700">
+                      Email
                   </Label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -186,6 +387,10 @@ export default function Login() {
                       required
                     />
                   </div>
+                  </div>
+                  
+                  {/* Show saved emails if available */}
+                  {/* This section was removed as per the new_code */}
                 </div>
 
                 <div className="space-y-2">
@@ -215,13 +420,46 @@ export default function Login() {
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <label className="flex items-center space-x-2 text-sm">
+                  <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
+                      id="remember"
+                      checked={rememberMe}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        console.log('=== CHECKBOX CHANGE ===');
+                        console.log('Remember me checkbox changed to:', checked);
+                        console.log('Previous state:', rememberMe);
+                        console.log('Event target checked:', e.target.checked);
+                        console.log('Event target type:', e.target.type);
+                        
+                        setRememberMe(checked);
+                        
+                        console.log('New state set to:', checked);
+                        console.log('State after setState (will be updated in next render):', checked);
+                        
+                        // If unchecking, clear saved credentials
+                        if (!checked) {
+                          console.log('Clearing saved credentials due to checkbox uncheck');
+                          clearSavedCredentials();
+                        }
+                      }}
                       className="rounded border-border text-primary focus:ring-primary"
                     />
-                    <span className="text-muted-foreground">Remember me</span>
+                    <label
+                      htmlFor="remember"
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      Remember me
                   </label>
+                  </div>
+                  
+                  {/* Note about credential persistence */}
+                  {rememberMe && (
+                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded">
+                      💡 Your login information will be saved and auto-filled on future visits, even after logging out.
+                    </div>
+                  )}
                   <Link 
                     to="/forgot-password" 
                     className="text-sm text-primary hover:text-primary-soft transition-colors"
@@ -229,6 +467,72 @@ export default function Login() {
                     Forgot password?
                   </Link>
                 </div>
+                
+                {rememberMe && (
+                  <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded-md">
+                    <p className="flex items-start">
+                      <span className="mr-2">🔒</span>
+                      <span>
+                        Your credentials will be saved locally on this device. 
+                        Only use this feature on your personal, secure device.
+                      </span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearSavedCredentials();
+                        setRememberMe(false);
+                        setFormData({ email: "", password: "" });
+                        toast({
+                          title: "Credentials Cleared",
+                          description: "Your saved login information has been removed.",
+                        });
+                      }}
+                      className="mt-2 text-primary hover:text-primary-soft text-xs underline"
+                    >
+                      Clear saved credentials
+                    </button>
+                  </div>
+                )}
+
+                {/* Saved Accounts Management */}
+                {savedEmails.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium text-gray-700">Saved Accounts</h4>
+                      <div className="text-xs text-gray-500">
+                        {savedEmails.length} account{savedEmails.length !== 1 ? 's' : ''} saved
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      {savedEmails.map((email) => (
+                        <div key={email} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                          <div className="flex items-center space-x-2">
+                            <Mail className="h-4 w-4 text-gray-500" />
+                            <span className="text-sm text-gray-700">{email}</span>
+                            {selectedSavedEmail === email && (
+                              <Badge variant="secondary" className="text-xs">Current</Badge>
+                            )}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleClearAccount(email)}
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="text-xs text-gray-500">
+                      💡 Your login information is encrypted and stored locally for convenience.
+                    </div>
+                  </div>
+                )}
               </CardContent>
 
               <CardFooter className="flex flex-col space-y-4">

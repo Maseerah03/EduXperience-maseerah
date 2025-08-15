@@ -24,11 +24,12 @@ export default function Home() {
     }
   ];
 
+  // Stats will be populated from the database in the future
   const stats = [
-    { number: "10,000+", label: "Active Students" },
-    { number: "5,000+", label: "Expert Tutors" },
-    { number: "500+", label: "Partner Institutions" },
-    { number: "98%", label: "Success Rate" }
+    { number: "0", label: "Active Students" },
+    { number: "0", label: "Expert Tutors" },
+    { number: "0", label: "Partner Institutions" },
+    { number: "0%", label: "Success Rate" }
   ];
 
   return (
@@ -48,8 +49,7 @@ export default function Home() {
                   </span>
                 </h1>
                 <p className="text-xl text-muted-foreground leading-relaxed">
-                  Join thousands of students connecting with expert tutors and top institutions. 
-                  Personalized learning experiences tailored just for you.
+                  Connect with tutors and institutions for personalized learning experiences tailored just for you.
                 </p>
               </div>
               
@@ -82,7 +82,7 @@ export default function Home() {
                   <Star className="h-5 w-5 fill-accent text-accent" />
                   <Star className="h-5 w-5 fill-accent text-accent" />
                   <Star className="h-5 w-5 fill-accent text-accent" />
-                  <span className="text-sm text-muted-foreground ml-2">4.9/5 from 10,000+ reviews</span>
+                  <span className="text-sm text-muted-foreground ml-2">No reviews yet</span>
                 </div>
               </div>
             </div>
@@ -153,10 +153,10 @@ export default function Home() {
               Ready to Transform Your Learning Journey?
             </h2>
             <p className="text-xl opacity-90">
-              Join thousands of successful students who've achieved their goals with EduXperience
+              Start your learning journey with EduXperience today
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link to="/signup">
+              <Link to="/signup-choice">
                 <Button 
                   size="lg" 
                   variant="secondary"

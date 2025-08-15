@@ -49,7 +49,7 @@ export default function SignUpChoice() {
                   </div>
                 </div>
                 
-                <Link to="/signup/student" className="block">
+                <Link to="/student-signup" className="block">
                   <Button className="w-full h-12 text-lg font-semibold mt-6">
                     Sign Up as Student
                   </Button>
@@ -85,7 +85,7 @@ export default function SignUpChoice() {
                   </div>
                 </div>
                 
-                <Link to="/signup/tutor" className="block">
+                <Link to="/tutor-signup" className="block">
                   <Button className="w-full h-12 text-lg font-semibold mt-6">
                     Sign Up as Tutor
                   </Button>
