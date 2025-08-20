@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { isAdminAuthenticated, adminLogout, getAdminSession } from "@/lib/admin-auth";
 import { useToast } from "@/hooks/use-toast";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { 
   Shield, 
   Users, 
@@ -30,6 +32,7 @@ import {
   TrendingUp,
   ExternalLink,
 } from "lucide-react";
+import PricingManagement from '@/components/admin/PricingManagement';
 
 interface User {
   id: string;
@@ -45,9 +48,10 @@ interface Profile {
   full_name: string;
   bio: string;
   avatar_url: string;
-  status: string;
+  verified: boolean;
   created_at: string;
   user_email: string;
+  type?: 'tutor' | 'institution';
 }
 
 interface Review {
@@ -177,6 +181,8 @@ export default function AdminDashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("verification");
+  const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -189,9 +195,12 @@ export default function AdminDashboard() {
     
     // Set up real-time subscriptions
     const setupRealtimeSubscriptions = () => {
-      // Users subscription
+      // Users subscription - monitor both users and public_users tables
       const usersSubscription = supabase
         .channel('admin-users-changes')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+          loadUsers();
+        })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'public_users' }, () => {
           loadUsers();
         })
@@ -202,6 +211,7 @@ export default function AdminDashboard() {
         .channel('admin-profiles-changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tutor_profiles' }, () => {
           loadProfiles();
+          loadUsers(); // Also reload users when profiles change
         })
         .subscribe();
 
@@ -245,6 +255,8 @@ export default function AdminDashboard() {
         })
         .subscribe();
 
+
+
       // Return cleanup function
       return () => {
         usersSubscription.unsubscribe();
@@ -254,6 +266,7 @@ export default function AdminDashboard() {
         transactionsSubscription.unsubscribe();
         payoutsSubscription.unsubscribe();
         refundsSubscription.unsubscribe();
+
       };
     };
 
@@ -296,6 +309,7 @@ export default function AdminDashboard() {
           console.warn('Failed to load refunds:', error);
           return null;
         }),
+
         loadFees().catch(error => {
           console.warn('Failed to load fees:', error);
           return null;
@@ -313,10 +327,21 @@ export default function AdminDashboard() {
                          content.length > 0 || transactions.length > 0 || payouts.length > 0 || 
                          refunds.length > 0 || fees.length > 0;
       
+      console.log('Data loading summary:', {
+        users: users.length,
+        profiles: profiles.length,
+        reviews: reviews.length,
+        content: content.length,
+        transactions: transactions.length,
+        payouts: payouts.length,
+        refunds: refunds.length,
+        fees: fees.length
+      });
+      
       if (hasAnyData) {
         toast({
           title: "Success",
-          description: "Admin dashboard loaded successfully",
+          description: `Admin dashboard loaded successfully. Found ${users.length} users, ${profiles.length} profiles.`,
         });
       } else {
         toast({
@@ -336,92 +361,252 @@ export default function AdminDashboard() {
     }
   };
 
-  const loadUsers = async () => {
+    const loadUsers = async () => {
     try {
-      // Try to get users from public_users table first
-      const { data, error } = await supabase
-        .from('public_users')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        // Fallback to users table if it exists
-        const { data: fallbackData, error: fallbackError } = await supabase
+      console.log('Loading users...');
+      
+      // Try to get users from users table first (should contain all users)
+      const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('*')
         .order('created_at', { ascending: false });
 
-        if (fallbackError) {
-          // If no users table exists, create a mock user for testing
-          console.warn('No users table found, using mock data');
-          setUsers([{
-            id: 'mock-user-1',
-            email: 'admin@example.com',
-            role: 'admin',
-            created_at: new Date().toISOString(),
-            verification_status: 'approved'
-          }]);
+      if (usersError) {
+        console.warn('Error loading from users table:', usersError);
+        
+        // Fallback to public_users table
+        const { data: publicUsersData, error: publicUsersError } = await supabase
+          .from('public_users')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (publicUsersError) {
+          console.warn('Error loading from public_users table:', publicUsersError);
+          
+          // If both tables fail, try to create users from existing data
+          await createUsersFromExistingData();
         } else {
-          setUsers(fallbackData || []);
+          console.log('Loaded users from public_users table:', publicUsersData?.length || 0);
+          // Show all users, but ensure students are auto-approved
+          const processedUsers = (publicUsersData || []).map(user => {
+            if (user.role === 'student') {
+              return { ...user, verification_status: 'approved' }; // Students are auto-approved
+            }
+            return user;
+          });
+          setUsers(processedUsers);
         }
       } else {
-      setUsers(data || []);
+        console.log('Loaded users from users table:', usersData?.length || 0);
+        // Show all users, but ensure students are auto-approved
+        const processedUsers = (usersData || []).map(user => {
+          if (user.role === 'student') {
+            return { ...user, verification_status: 'approved' }; // Students are auto-approved
+          }
+          return user;
+        });
+        setUsers(processedUsers);
       }
     } catch (error) {
       console.error('Error loading users:', error);
-      // Create mock data on error
-      setUsers([{
-        id: 'mock-user-1',
-        email: 'admin@example.com',
-        role: 'admin',
-        created_at: new Date().toISOString(),
-        verification_status: 'approved'
-      }]);
+      // Try to create users from existing data as last resort
+      await createUsersFromExistingData();
+    }
+  };
+
+  const createUsersFromExistingData = async () => {
+    try {
+      console.log('Creating users from existing data...');
+      
+      // Get all auth users
+      const { data: authUsers, error: authError } = await supabase.auth.admin.listUsers();
+      
+      if (authError) {
+        console.error('Error getting auth users:', authError);
+        return;
+      }
+
+      // Get tutor profiles
+      const { data: tutorProfiles, error: tutorError } = await supabase
+        .from('tutor_profiles')
+        .select('user_id, verified')
+        .limit(100);
+
+      if (tutorError) {
+        console.warn('Error getting tutor profiles:', tutorError);
+      }
+
+      // Get institution profiles
+      const { data: institutionProfiles, error: institutionError } = await supabase
+        .from('institution_profiles')
+        .select('user_id, verified')
+        .limit(100);
+
+      if (institutionError) {
+        console.warn('Error getting institution profiles:', institutionError);
+      }
+
+      // Get profiles
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, role')
+        .limit(100);
+
+      if (profilesError) {
+        console.warn('Error getting profiles:', profilesError);
+      }
+
+      // Create users array - ALL users, but students are auto-approved
+      const usersArray = authUsers.users.map(authUser => {
+        const isTutor = tutorProfiles?.some(tp => tp.user_id === authUser.id);
+        const isInstitution = institutionProfiles?.some(ip => ip.user_id === authUser.id);
+        const profile = profiles?.find(p => p.user_id === authUser.id);
+        
+        // Determine role - prioritize explicit role from profiles table
+        let role = profile?.role;
+        if (!role) {
+          if (isTutor) role = 'tutor';
+          else if (isInstitution) role = 'institution';
+          else role = 'user'; // fallback
+        }
+        
+        // Set verification status based on role
+        let verification_status = 'approved'; // Default to approved
+        if (role === 'tutor' || role === 'institution') {
+          verification_status = (isTutor || isInstitution) ? 'pending' : 'pending';
+        } else if (role === 'student') {
+          verification_status = 'approved'; // Students are auto-approved
+        }
+        
+        return {
+          id: authUser.id,
+          user_id: authUser.id,
+          email: authUser.email || 'unknown@example.com',
+          role: role,
+          verification_status: verification_status,
+          created_at: authUser.created_at,
+          updated_at: authUser.updated_at
+        };
+      });
+
+      console.log('Created users from existing data (all users):', usersArray.length);
+      setUsers(usersArray);
+      
+      // Try to save to users table for future use
+      try {
+        await supabase.from('users').upsert(usersArray, { onConflict: 'user_id' });
+      } catch (saveError) {
+        console.warn('Could not save users to table:', saveError);
+      }
+    } catch (error) {
+      console.error('Error creating users from existing data:', error);
+      // Set empty array as last resort
+      setUsers([]);
     }
   };
 
   const loadProfiles = async () => {
     try {
+      console.log('Loading profiles...');
+      
+      // First check if tutor_profiles table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('tutor_profiles')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('tutor_profiles table not accessible:', tableError);
+        setProfiles([]);
+        return;
+      }
+
+      // Load profiles with proper join
       const { data, error } = await supabase
         .from('tutor_profiles')
         .select(`
           *,
-          public_users!tutor_profiles_user_id_fkey(email)
+          profiles!tutor_profiles_user_id_fkey(full_name, profile_photo_url)
         `)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading profiles with join:', error);
+        
+        // Fallback: load just tutor_profiles without join
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('tutor_profiles')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (fallbackError) {
+          console.warn('Error loading profiles fallback:', fallbackError);
+          setProfiles([]);
+          return;
+        }
+
+        // Create basic profile data without join
+        const profilesData = fallbackData?.map(profile => ({
+          id: profile.id,
+          user_id: profile.user_id,
+          full_name: `Tutor ${profile.user_id?.slice(0, 8) || 'Unknown'}`,
+          bio: profile.bio || 'N/A',
+          avatar_url: '',
+          verified: profile.verified || false,
+          created_at: profile.created_at,
+          user_email: profile.user_id || 'N/A'
+        })) || [];
+
+        setProfiles(profilesData);
+        return;
+      }
       
       const profilesData = data?.map(profile => ({
         id: profile.id,
         user_id: profile.user_id,
-        full_name: profile.full_name || 'N/A',
+        full_name: profile.profiles?.full_name || `Tutor ${profile.user_id?.slice(0, 8) || 'Unknown'}`,
         bio: profile.bio || 'N/A',
-        avatar_url: profile.avatar_url || '',
-        status: profile.status || 'pending',
+        avatar_url: profile.profiles?.profile_photo_url || '',
+        verified: profile.verified || false,
         created_at: profile.created_at,
-        user_email: profile.public_users?.email || profile.user_id || 'N/A'
+        user_email: profile.user_id || 'N/A'
       })) || [];
 
+      console.log('Loaded profiles:', profilesData.length);
       setProfiles(profilesData);
     } catch (error) {
       console.error('Error loading profiles:', error);
-      throw error;
+      setProfiles([]);
     }
   };
 
   const loadReviews = async () => {
     try {
+      console.log('Loading reviews...');
+      
+      // Check if reviews table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('reviews')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('reviews table not accessible:', tableError);
+        setReviews([]);
+        return;
+      }
+
+      // Try to load with join first
       const { data, error } = await supabase
         .from('reviews')
-        .select(`
-          *,
-          reviewer:public_users!reviews_reviewer_id_fkey(email),
-          tutor:public_users!reviews_tutor_id_fkey(email)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading reviews:', error);
+        setReviews([]);
+        return;
+      }
       
       const reviewsData = data?.map(review => ({
         id: review.id,
@@ -431,28 +616,45 @@ export default function AdminDashboard() {
         comment: review.review_text,
         status: review.status || 'pending',
         created_at: review.created_at,
-        reviewer_email: review.reviewer?.email || review.reviewer_id || 'N/A',
-        tutor_email: review.tutor?.email || review.tutor_id || 'N/A'
+        reviewer_email: review.reviewer_id || 'N/A',
+        tutor_email: review.tutor_id || 'N/A'
       })) || [];
 
+      console.log('Loaded reviews:', reviewsData.length);
       setReviews(reviewsData);
     } catch (error) {
       console.error('Error loading reviews:', error);
-      throw error;
+      setReviews([]);
     }
   };
 
   const loadContent = async () => {
     try {
+      console.log('Loading content...');
+      
+      // Check if tutor_content table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('tutor_content')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('tutor_content table not accessible:', tableError);
+        setContent([]);
+        return;
+      }
+
+      // Load content without complex joins
       const { data, error } = await supabase
         .from('tutor_content')
-        .select(`
-          *,
-          public_users!tutor_content_user_id_fkey(email)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading content:', error);
+        setContent([]);
+        return;
+      }
       
       const contentData = data?.map(item => ({
         id: item.id,
@@ -463,76 +665,126 @@ export default function AdminDashboard() {
         file_type: item.file_type || 'unknown',
         status: item.status || 'pending',
         created_at: item.created_at,
-        user_email: item.public_users?.email || item.user_id || 'N/A'
+        user_email: item.user_id || 'N/A'
       })) || [];
 
+      console.log('Loaded content:', contentData.length);
       setContent(contentData);
     } catch (error) {
       console.error('Error loading content:', error);
-      // Don't throw error for content as it might not exist yet
       setContent([]);
     }
   };
 
   const loadTransactions = async () => {
     try {
+      console.log('Loading transactions...');
+      
+      // Check if transactions table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('transactions')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('transactions table not accessible:', tableError);
+        setTransactions([]);
+        return;
+      }
+
+      // Load transactions without complex joins
       const { data, error } = await supabase
         .from('transactions')
-        .select(`
-          *,
-          public_users!transactions_user_id_fkey(email)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading transactions:', error);
+        setTransactions([]);
+        return;
+      }
       
       const transactionsData = data?.map(transaction => ({
         ...transaction,
-        user_email: transaction.public_users?.email || transaction.user_id || 'N/A'
+        user_email: transaction.user_id || 'N/A'
       })) || [];
       
+      console.log('Loaded transactions:', transactionsData.length);
       setTransactions(transactionsData);
     } catch (error) {
       console.error('Error loading transactions:', error);
-      throw error;
+      setTransactions([]);
     }
   };
 
   const loadPayouts = async () => {
     try {
+      console.log('Loading payouts...');
+      
+      // Check if payouts table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('payouts')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('payouts table not accessible:', tableError);
+        setPayouts([]);
+        return;
+      }
+
+      // Load payouts without complex joins
       const { data, error } = await supabase
         .from('payouts')
-        .select(`
-          *,
-          public_users!payouts_user_id_fkey(email)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading payouts:', error);
+        setPayouts([]);
+        return;
+      }
       
       const payoutsData = data?.map(payout => ({
         ...payout,
-        user_email: payout.public_users?.email || payout.user_id || 'N/A'
+        user_email: payout.user_id || 'N/A'
       })) || [];
       
+      console.log('Loaded payouts:', payoutsData.length);
       setPayouts(payoutsData);
     } catch (error) {
       console.error('Error loading payouts:', error);
-      throw error;
+      setPayouts([]);
     }
   };
 
   const loadRefunds = async () => {
     try {
+      console.log('Loading refunds...');
+      
+      // Check if refunds table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('refunds')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('refunds table not accessible:', tableError);
+        setRefunds([]);
+        return;
+      }
+
+      // Load refunds without complex joins
       const { data, error } = await supabase
         .from('refunds')
-        .select(`
-          *,
-          original_transaction:transactions!refunds_transaction_id_fkey(id, amount, currency, type, status, description, created_at)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading refunds:', error);
+        setRefunds([]);
+        return;
+      }
       
       const refundsData = data?.map(refund => ({
         id: refund.id,
@@ -544,28 +796,51 @@ export default function AdminDashboard() {
         created_at: refund.created_at,
         processed_at: refund.processed_at,
         admin_notes: refund.admin_notes,
-        original_transaction: refund.original_transaction
+        original_transaction: null // Simplified for now
       })) || [];
 
+      console.log('Loaded refunds:', refundsData.length);
       setRefunds(refundsData);
     } catch (error) {
       console.error('Error loading refunds:', error);
-      throw error;
+      setRefunds([]);
     }
   };
 
+
+
   const loadFees = async () => {
     try {
+      console.log('Loading fees...');
+      
+      // Check if fees table exists
+      const { data: tableCheck, error: tableError } = await supabase
+        .from('fees')
+        .select('id')
+        .limit(1);
+
+      if (tableError) {
+        console.warn('fees table not accessible:', tableError);
+        setFees([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('fees')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.warn('Error loading fees:', error);
+        setFees([]);
+        return;
+      }
+      
+      console.log('Loaded fees:', data?.length || 0);
       setFees(data || []);
     } catch (error) {
       console.error('Error loading fees:', error);
-      throw error;
+      setFees([]);
     }
   };
 
@@ -585,11 +860,11 @@ export default function AdminDashboard() {
     const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // User Growth Metrics
-    const totalUsers = users.length;
+    // User Growth Metrics - ALL users, but distinguish verification requirements
+    const totalUsers = users.length; // All users
     const totalStudents = users.filter(u => u.role === 'student').length;
-    const totalVerificationRequired = users.filter(u => u.role !== 'student').length;
-    const verifiedUsers = users.filter(u => u.role !== 'student' && u.verification_status === 'approved').length;
+    const totalVerificationRequired = users.filter(u => u.role === 'tutor' || u.role === 'institution').length;
+    const verifiedUsers = users.filter(u => (u.role === 'tutor' || u.role === 'institution') && u.verification_status === 'approved').length;
     
     const newUsersThisMonth = users.filter(user => 
       new Date(user.created_at) >= oneMonthAgo
@@ -597,7 +872,7 @@ export default function AdminDashboard() {
     const newUsersThisWeek = users.filter(user => 
       new Date(user.created_at) >= oneWeekAgo
     ).length;
-    const activeUsers = totalStudents + verifiedUsers; // Students + verified tutors/institutions
+    const activeUsers = totalStudents + verifiedUsers; // Students (auto-approved) + verified tutors/institutions
     const userGrowthRate = totalUsers > 0 ? ((newUsersThisMonth / totalUsers) * 100) : 0;
 
     // Revenue Metrics
@@ -614,10 +889,10 @@ export default function AdminDashboard() {
     const revenueGrowthRate = totalRevenue > 0 ? ((monthlyRevenue / totalRevenue) * 100) : 0;
     const averageTransactionValue = completedPayments.length > 0 ? totalRevenue / completedPayments.length : 0;
 
-    // Engagement Metrics
+    // Engagement Metrics - ALL users
     const totalSessions = reviews.length; // Assuming each review represents a session
-    const activeTutors = profiles.filter(p => p.status === 'approved').length;
-    const activeStudents = users.filter(u => u.role === 'student').length; // Students don't need verification
+    const activeTutors = profiles.filter(p => p.verified).length;
+    const activeStudents = users.filter(u => u.role === 'student').length; // Students are always active (auto-approved)
     const contentUploads = content.length;
     const reviewSubmissions = reviews.length;
 
@@ -756,11 +1031,19 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleProfileModeration = async (profileId: string, status: string) => {
+  const handleProfileView = (profile: Profile) => {
+    setSelectedProfile(profile);
+    setShowProfileModal(true);
+  };
+
+  const handleProfileModeration = async (profileId: string, action: 'approve' | 'reject') => {
     try {
+      // Update the verified field based on the action
+      const verified = action === 'approve';
+      
       const { error } = await supabase
         .from('tutor_profiles')
-        .update({ status: status })
+        .update({ verified: verified })
         .eq('id', profileId);
 
       if (error) throw error;
@@ -768,20 +1051,98 @@ export default function AdminDashboard() {
       setProfiles(prev => 
         prev.map(profile => 
           profile.id === profileId 
-            ? { ...profile, status: status }
+            ? { ...profile, verified: verified }
             : profile
         )
       );
 
       toast({
         title: "Success",
-        description: `Profile ${status} successfully`,
+        description: `Profile ${action === 'approve' ? 'approved' : 'rejected'} successfully`,
       });
     } catch (error) {
       console.error('Error updating profile:', error);
       toast({
         title: "Error",
-        description: "Failed to update profile status",
+        description: "Failed to update profile verification",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleUserVerification = async (userId: string, action: 'approve' | 'reject') => {
+    try {
+      const newStatus = action === 'approve' ? 'approved' : 'rejected';
+      console.log(`Updating user ${userId} to status: ${newStatus}`);
+      
+      // Update users table
+      const { error: usersError } = await supabase
+        .from('users')
+        .update({ verification_status: newStatus })
+        .eq('id', userId);
+
+      if (usersError) {
+        console.warn('Error updating users table:', usersError);
+      }
+
+      // Update public_users table as well
+      const { error: publicUsersError } = await supabase
+        .from('public_users')
+        .update({ verification_status: newStatus })
+        .eq('id', userId);
+
+      if (publicUsersError) {
+        console.warn('Error updating public_users table:', publicUsersError);
+      }
+
+             // Update tutor_profiles.verified if this is a tutor
+       const user = users.find(u => u.id === userId);
+       if (user && user.role === 'tutor') {
+         const { error: profileError } = await supabase
+           .from('tutor_profiles')
+           .update({ verified: action === 'approve' })
+           .eq('user_id', userId);
+
+         if (profileError) {
+           console.warn('Failed to update tutor profile:', profileError);
+         } else {
+           console.log('Updated tutor profile verified status');
+         }
+       }
+
+       // Update institution_profiles.verified if this is an institution
+       if (user && user.role === 'institution') {
+         const { error: institutionError } = await supabase
+           .from('institution_profiles')
+           .update({ verified: action === 'approve' })
+           .eq('user_id', userId);
+
+         if (institutionError) {
+           console.warn('Failed to update institution profile:', institutionError);
+         } else {
+           console.log('Updated institution profile verified status');
+         }
+       }
+
+      // If both main tables fail, throw error
+      if (usersError && publicUsersError) {
+        throw new Error('Failed to update both user tables');
+      }
+
+      toast({
+        title: "Success",
+        description: `User ${action === 'approve' ? 'approved' : 'rejected'} successfully.`,
+      });
+
+      // Real-time updates will handle the UI refresh automatically
+      // But we can also manually reload to ensure consistency
+      loadUsers();
+      loadProfiles();
+    } catch (error) {
+      console.error('Error updating user verification status:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update user verification status.",
         variant: "destructive",
       });
     }
@@ -968,16 +1329,25 @@ export default function AdminDashboard() {
   };
 
   const getStats = () => {
+    // Count all users for total
     const total = users.length;
-            const pending = users.filter(u => u.role !== 'student' && u.verification_status === 'pending').length;
-        const approved = users.filter(u => u.role !== 'student' && u.verification_status === 'approved').length;
-        const rejected = users.filter(u => u.role !== 'student' && u.verification_status === 'rejected').length;
+    // Only count verification-required users (tutors & institutions) for verification stats
+    const verificationRequired = users.filter(u => u.role === 'tutor' || u.role === 'institution');
+    const pending = verificationRequired.filter(u => u.verification_status === 'pending').length;
+    const approved = verificationRequired.filter(u => u.verification_status === 'approved').length;
+    const rejected = verificationRequired.filter(u => u.verification_status === 'rejected').length;
     return { total, pending, approved, rejected };
   };
 
+  // Force stats refresh when users change
+  useEffect(() => {
+    // This will trigger a re-render when users array changes
+    console.log('Users updated, stats refreshed:', getStats());
+  }, [users]);
+
   const getContentStats = () => {
     const totalProfiles = profiles.length;
-    const pendingProfiles = profiles.filter(p => p.status === 'pending').length;
+    const pendingProfiles = profiles.filter(p => !p.verified).length;
     const totalReviews = reviews.length;
     const pendingReviews = reviews.filter(r => r.status === 'pending').length;
     const totalContent = content.length;
@@ -1128,6 +1498,9 @@ export default function AdminDashboard() {
                   <p className="mt-2">
                     <strong>Note:</strong> The database setup guide has been removed from this dashboard. Please refer to the migration files in the <code className="bg-blue-100 px-1 rounded">supabase/migrations/</code> folder for detailed setup instructions.
                   </p>
+                  <p className="mt-2">
+                    <strong>Admin Dashboard Scope:</strong> This dashboard manages all users. Students are auto-approved and don't need verification, while tutors and institutions require admin approval.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1142,7 +1515,7 @@ export default function AdminDashboard() {
                 <div className="flex items-center space-x-3">
                   <Users className="h-6 w-6 text-blue-600" />
                   <div>
-                    <p className="text-sm text-gray-600">Total Users (All Roles)</p>
+                    <p className="text-sm text-gray-600">Total Users</p>
                     <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
                   </div>
                 </div>
@@ -1165,7 +1538,7 @@ export default function AdminDashboard() {
                 <div className="flex items-center space-x-3">
                   <Clock className="h-6 w-6 text-yellow-600" />
                   <div>
-                    <p className="text-sm text-gray-600">Pending Verification</p>
+                    <p className="text-sm text-gray-600">Pending Verification (Tutors & Institutions)</p>
                     <p className="text-2xl font-bold text-gray-900">{stats.pending}</p>
                   </div>
                 </div>
@@ -1190,7 +1563,7 @@ export default function AdminDashboard() {
                 <div className="flex items-center space-x-3">
                   <UserCheck className="h-6 w-6 text-green-600" />
                   <div>
-                    <p className="text-sm text-gray-600">Verified Users</p>
+                    <p className="text-sm text-gray-600">Verified Users (Tutors & Institutions)</p>
                     <p className="text-2xl font-bold text-gray-900">{stats.approved}</p>
                   </div>
                 </div>
@@ -1213,7 +1586,7 @@ export default function AdminDashboard() {
                 <div className="flex items-center space-x-3">
                   <UserX className="h-6 w-6 text-red-600" />
                   <div>
-                    <p className="text-sm text-gray-600">Rejected Users</p>
+                    <p className="text-sm text-gray-600">Rejected Users (Tutors & Institutions)</p>
                     <p className="text-2xl font-bold text-gray-900">{stats.rejected}</p>
                   </div>
                 </div>
@@ -1461,10 +1834,10 @@ export default function AdminDashboard() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-10 gap-1">
+          <TabsList className="grid w-full grid-cols-9 gap-2">
             <TabsTrigger value="verification" className="flex items-center space-x-2 data-[state=active]:bg-blue-50 data-[state=active]:border-blue-200">
               <Users className="h-4 w-4" />
-              <span>Verification</span>
+              <span>Users</span>
               {stats.pending > 0 && (
                 <Badge variant="destructive" className="ml-1 h-5 w-5 p-0 text-xs">
                   {stats.pending}
@@ -1516,136 +1889,213 @@ export default function AdminDashboard() {
               <span>Refunds</span>
               {paymentStats.pendingRefunds > 0 && (
                 <Badge variant="destructive" className="ml-1 h-5 w-5 p-0 text-xs">
-                  {paymentStats.pendingRefunds}
+                  {contentStats.pendingRefunds}
                 </Badge>
               )}
-            </TabsTrigger>
-            <TabsTrigger value="fees" className="flex items-center space-x-2 data-[state=active]:bg-indigo-50 data-[state=active]:border-indigo-200">
-              <div className="h-4 w-4 font-bold text-center text-xs">%</div>
-              <span>Fees</span>
             </TabsTrigger>
             <TabsTrigger value="analytics" className="flex items-center space-x-2 data-[state=active]:bg-slate-50 data-[state=active]:border-slate-200">
               <BarChart3 className="h-4 w-4" />
               <span>Analytics</span>
             </TabsTrigger>
+            <TabsTrigger value="pricing" className="flex items-center space-x-2 data-[state=active]:bg-cyan-50 data-[state=active]:border-cyan-200">
+              <div className="h-4 w-4 font-bold text-center text-xs">₹</div>
+              <span>Pricing</span>
+            </TabsTrigger>
           </TabsList>
 
-          {/* User Verification Tab */}
+                    {/* User Management Tab */}
           <TabsContent value="verification" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>User Verification Management (Tutors & Institutions Only)</CardTitle>
-                <CardDescription>
-                  Students are automatically verified and don't require manual approval
-                </CardDescription>
+                <CardTitle>User Management</CardTitle>
+                <CardDescription>Manage all users. Students are auto-approved, only tutors and institutions need verification.</CardDescription>
               </CardHeader>
               <CardContent>
-                {/* Search and Filter Bar */}
-                <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-                  <div className="flex flex-col sm:flex-row gap-4">
-                    <div className="flex-1">
-                      <input
-                        type="text"
-                        placeholder="Search by email..."
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        onChange={(e) => {
-                          const searchTerm = e.target.value.toLowerCase();
-                          // You can implement search filtering here
-                        }}
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Show all users
-                        }}
-                        className="border-blue-200 text-blue-700 hover:bg-blue-50"
-                      >
-                        All
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Filter pending users
-                        }}
-                        className="border-yellow-200 text-yellow-700 hover:bg-yellow-50"
-                      >
-                        Pending ({users.filter(u => u.role !== 'student' && u.verification_status === 'pending').length})
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Filter approved users
-                        }}
-                        className="border-green-200 text-green-700 hover:bg-green-50"
-                      >
-                        Approved ({users.filter(u => u.role !== 'student' && u.verification_status === 'approved').length})
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Filter rejected users
-                        }}
-                        className="border-red-200 text-red-700 hover:bg-red-50"
-                      >
-                        Rejected ({users.filter(u => u.role !== 'student' && u.verification_status === 'rejected').length})
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
                 <div className="space-y-4">
-                  {users.filter(user => user.role !== 'student').map((user) => (
+                  {users.map((user) => (
                     <div key={user.id} className="flex items-center justify-between p-4 border rounded-lg">
-                      <div>
+                      <div className="flex-1">
                         <p className="font-medium">{user.email}</p>
-                        <div className="flex items-center space-x-2 mt-1">
+                        <p className="text-sm text-gray-600">Role: {user.role}</p>
+                        <p className="text-sm text-gray-500 mt-1">Status: {user.verification_status}</p>
+                        <div className="flex items-center space-x-2 mt-2">
                           <Badge variant="outline">{user.role}</Badge>
                           <Badge 
-                            variant={user.verification_status === 'approved' ? 'default' : 
-                                    user.verification_status === 'rejected' ? 'destructive' : 'secondary'}
+                            variant={user.verification_status === 'approved' ? 'default' : 'secondary'}
                           >
-                            {user.verification_status}
+                            {user.verification_status === 'approved' ? '✅ Approved' : '⏳ Pending'}
+                          </Badge>
+                          {user.role === 'tutor' && (
+                            <Badge variant="secondary">Tutor Profile</Badge>
+                          )}
+                          {user.role === 'institution' && (
+                            <Badge variant="secondary">Institution Profile</Badge>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex space-x-2 ml-4">
+                        {/* Only show verification buttons for tutors and institutions */}
+                        {(user.role === 'tutor' || user.role === 'institution') ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleUserVerification(user.id, 'approve')}
+                              disabled={user.verification_status === 'approved'}
+                            >
+                              <CheckCircle className="h-4 w-4 mr-2" />
+                              Approve
+                            </Button>
+                            
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleUserVerification(user.id, 'reject')}
+                              disabled={user.verification_status === 'rejected'}
+                            >
+                              <XCircle className="h-4 w-4 mr-2" />
+                              Reject
+                            </Button>
+                          </>
+                        ) : (
+                          <Badge variant="secondary" className="ml-2">
+                            Auto-Approved
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Transactions Tab */}
+          <TabsContent value="transactions" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Transaction Management</CardTitle>
+                <CardDescription>Monitor and manage platform transactions</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {transactions.map((transaction) => (
+                    <div key={transaction.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium">₹{transaction.amount} {transaction.currency}</p>
+                        <p className="text-sm text-gray-600">{transaction.description}</p>
+                        <p className="text-sm text-gray-500 mt-1">Type: {transaction.type}</p>
+                        <div className="flex items-center space-x-2 mt-2">
+                          <Badge variant="outline">{transaction.type}</Badge>
+                          <Badge 
+                            variant={transaction.status === 'completed' ? 'default' : 'secondary'}
+                          >
+                            {transaction.status}
                           </Badge>
                         </div>
                       </div>
                       
-                      {user.verification_status === 'pending' && (
-                        <div className="flex space-x-2">
-                          <Button
-                            size="sm"
-                            onClick={() => handleVerification(user.id, 'approved')}
-                            className="bg-green-600 hover:bg-green-700"
+                      <div className="flex space-x-2 ml-4">
+                        <Badge variant="outline">
+                          {new Date(transaction.created_at).toLocaleDateString()}
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Payouts Tab */}
+          <TabsContent value="payouts" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Payout Management</CardTitle>
+                <CardDescription>Manage tutor and institution payouts</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {payouts.map((payout) => (
+                    <div key={payout.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium">₹{payout.amount} {payout.currency}</p>
+                        <p className="text-sm text-gray-600">Method: {payout.method}</p>
+                        <p className="text-sm text-gray-500 mt-1">Status: {payout.status}</p>
+                        <div className="flex items-center space-x-2 mt-2">
+                          <Badge variant="outline">{payout.method}</Badge>
+                          <Badge 
+                            variant={payout.status === 'completed' ? 'default' : 'secondary'}
                           >
-                            <CheckCircle className="h-4 w-4 mr-2" />
-                            Approve
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => handleVerification(user.id, 'rejected')}
-                          >
-                            <XCircle className="h-4 w-4 mr-2" />
-                            Reject
-                          </Button>
+                            {payout.status}
+                          </Badge>
                         </div>
-                      )}
-                      
-                      {user.verification_status === 'rejected' && (
-                        <Button
-                          size="sm"
-                          onClick={() => handleVerification(user.id, 'approved')}
-                          className="bg-green-600 hover:bg-green-700"
-                        >
-                          <CheckCircle className="h-4 w-4 mr-2" />
-                          Re-approve
-                        </Button>
-                      )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Refunds Tab */}
+          <TabsContent value="refunds" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Refund Management</CardTitle>
+                <CardDescription>Handle refund requests and processing</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {refunds.map((refund) => (
+                    <div key={refund.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium">₹{refund.amount} {refund.currency}</p>
+                        <p className="text-sm text-gray-600">Reason: {refund.reason}</p>
+                        <p className="text-sm text-gray-500 mt-1">Status: {refund.status}</p>
+                        <div className="flex items-center space-x-2 mt-2">
+                          <Badge variant="outline">Refund</Badge>
+                          <Badge 
+                            variant={refund.status === 'processed' ? 'default' : 'secondary'}
+                          >
+                            {refund.status}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Fees Tab */}
+          <TabsContent value="fees" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Fee Management</CardTitle>
+                <CardDescription>Configure platform fees and charges</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {fees.map((fee) => (
+                    <div key={fee.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium">{fee.name}</p>
+                        <p className="text-sm text-gray-600">{fee.description}</p>
+                        <p className="text-sm text-gray-500 mt-1">
+                          {fee.type === 'percentage' ? `${fee.value}%` : `₹${fee.value}`} {fee.currency}
+                        </p>
+                        <div className="flex items-center space-x-2 mt-2">
+                          <Badge variant="outline">{fee.type}</Badge>
+                          <Badge 
+                            variant={fee.is_active ? 'default' : 'secondary'}
+                          >
+                            {fee.is_active ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1670,10 +2120,9 @@ export default function AdminDashboard() {
                         <div className="flex items-center space-x-2 mt-2">
                           <Badge variant="outline">Profile</Badge>
                           <Badge 
-                            variant={profile.status === 'approved' ? 'default' : 
-                                    profile.status === 'rejected' ? 'destructive' : 'secondary'}
+                            variant={profile.verified ? 'default' : 'secondary'}
                           >
-                            {profile.status}
+                            {profile.verified ? '✅ Verified' : '⏳ Pending Verification'}
                           </Badge>
                         </div>
                       </div>
@@ -1682,42 +2131,31 @@ export default function AdminDashboard() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => window.open(profile.avatar_url, '_blank')}
-                          disabled={!profile.avatar_url}
+                          onClick={() => handleProfileView(profile)}
                         >
                           <Eye className="h-4 w-4 mr-2" />
                           View
                         </Button>
                         
-                        {profile.status === 'pending' && (
-                          <>
+                        {!profile.verified && (
                             <Button
                               size="sm"
-                              onClick={() => handleProfileModeration(profile.id, 'approved')}
+                            onClick={() => handleProfileModeration(profile.id, 'approve')}
                               className="bg-green-600 hover:bg-green-700"
                             >
                               <CheckCircle className="h-4 w-4 mr-2" />
                               Approve
                             </Button>
+                        )}
+                        
+                        {profile.verified && (
                             <Button
                               variant="destructive"
                               size="sm"
-                              onClick={() => handleProfileModeration(profile.id, 'rejected')}
+                            onClick={() => handleProfileModeration(profile.id, 'reject')}
                             >
                               <XCircle className="h-4 w-4 mr-2" />
                               Reject
-                            </Button>
-                          </>
-                        )}
-                        
-                        {profile.status === 'rejected' && (
-                          <Button
-                            size="sm"
-                            onClick={() => handleProfileModeration(profile.id, 'approved')}
-                            className="bg-green-600 hover:bg-green-700"
-                          >
-                            <CheckCircle className="h-4 w-4 mr-2" />
-                            Re-approve
                           </Button>
                         )}
                       </div>
@@ -2147,7 +2585,7 @@ export default function AdminDashboard() {
                         </div>
                         <div className="mt-2">
                           <span className="text-xs text-blue-600">
-                            {analytics.userGrowth.totalStudents} students + {analytics.userGrowth.verifiedUsers} verified
+                            {analytics.userGrowth.totalStudents} students + {analytics.userGrowth.verifiedUsers} verified tutors & institutions
                           </span>
                         </div>
                       </div>
@@ -2376,7 +2814,141 @@ export default function AdminDashboard() {
               </CardContent>
             </Card>
           </TabsContent>
+          <TabsContent value="pricing" className="space-y-6">
+            <PricingManagement />
+          </TabsContent>
         </Tabs>
+        
+        {/* Profile View Modal */}
+        <Dialog open={showProfileModal} onOpenChange={setShowProfileModal}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Profile Details</DialogTitle>
+            </DialogHeader>
+            {selectedProfile && (
+              <div className="space-y-6">
+                {/* Profile Header */}
+                <div className="flex items-center space-x-4">
+                  {selectedProfile.avatar_url ? (
+                    <img 
+                      src={selectedProfile.avatar_url} 
+                      alt={selectedProfile.full_name}
+                      className="w-20 h-20 rounded-full object-cover border-2 border-gray-200"
+                    />
+                  ) : (
+                    <div className="w-20 h-20 rounded-full bg-gray-200 flex items-center justify-center">
+                      <UserCheck className="h-10 w-10 text-gray-400" />
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="text-xl font-semibold">{selectedProfile.full_name}</h3>
+                    <p className="text-gray-600">{selectedProfile.user_email}</p>
+                    <Badge 
+                      variant={selectedProfile.verified ? 'default' : 'secondary'}
+                      className="mt-2"
+                    >
+                      {selectedProfile.verified ? '✅ Verified' : '⏳ Pending Verification'}
+                    </Badge>
+                  </div>
+                </div>
+
+                {/* Profile Information */}
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Bio</h4>
+                    <p className="text-gray-700 bg-gray-50 p-3 rounded-lg">
+                      {selectedProfile.bio || "No bio provided"}
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Profile Information</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <span className="text-gray-600">Profile ID:</span>
+                        <p className="font-mono text-gray-900">{selectedProfile.id}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">User ID:</span>
+                        <p className="font-mono text-gray-900">{selectedProfile.user_id}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Created:</span>
+                        <p className="text-gray-900">
+                          {new Date(selectedProfile.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Verification Status:</span>
+                        <Badge 
+                          variant={selectedProfile.verified ? 'default' : 'secondary'}
+                        >
+                          {selectedProfile.verified ? '✅ Verified' : '⏳ Pending Verification'}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Avatar Preview */}
+                  {selectedProfile.avatar_url && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Profile Photo</h4>
+                      <div className="flex items-center space-x-4">
+                        <img 
+                          src={selectedProfile.avatar_url} 
+                          alt={selectedProfile.full_name}
+                          className="w-32 h-32 rounded-lg object-cover border border-gray-200"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => window.open(selectedProfile.avatar_url, '_blank')}
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Open Full Size
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end space-x-3 pt-4 border-t">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowProfileModal(false)}
+                  >
+                    Close
+                  </Button>
+                  {!selectedProfile.verified && (
+                    <Button
+                      onClick={() => {
+                        handleProfileModeration(selectedProfile.id, 'approve');
+                        setShowProfileModal(false);
+                      }}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Approve
+                    </Button>
+                  )}
+                  {selectedProfile.verified && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => {
+                        handleProfileModeration(selectedProfile.id, 'reject');
+                        setShowProfileModal(false);
+                      }}
+                    >
+                      <XCircle className="h-4 w-4 mr-2" />
+                      Reject
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
         
       </main>
     </div>

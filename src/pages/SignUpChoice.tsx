@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Header } from "@/components/layout/Header";
-import { GraduationCap, Users, BookOpen, Target } from "lucide-react";
+import { GraduationCap, Users, BookOpen, Target, Building2 } from "lucide-react";
 import { Link } from "react-router-dom";
 
 export default function SignUpChoice() {
@@ -20,7 +20,7 @@ export default function SignUpChoice() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {/* Student Card */}
             <Card className="group hover:shadow-lg transition-all duration-300 border-2 hover:border-primary/50">
               <CardHeader className="text-center pb-4">
@@ -88,6 +88,42 @@ export default function SignUpChoice() {
                 <Link to="/tutor-signup" className="block">
                   <Button className="w-full h-12 text-lg font-semibold mt-6">
                     Sign Up as Tutor
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+
+            {/* Institution Card */}
+            <Card className="group hover:shadow-lg transition-all duration-300 border-2 hover:border-primary/50">
+              <CardHeader className="text-center pb-4">
+                <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
+                  <Building2 className="h-8 w-8 text-primary" />
+                </div>
+                <CardTitle className="text-2xl font-bold">I'm an Institution</CardTitle>
+                <CardDescription className="text-lg">
+                  Offer your educational services to students
+                </CardDescription>
+              </CardHeader>
+              
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-3">
+                    <Building2 className="h-5 w-5 text-primary" />
+                    <span className="text-muted-foreground">Manage multiple tutors</span>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <Target className="h-5 w-5 text-primary" />
+                    <span className="text-muted-foreground">Scale your services</span>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <Users className="h-5 w-5 text-primary" />
+                    <span className="text-muted-foreground">Reach more students</span>
+                  </div>
+                </div>
+                
+                <Link to="/institution-signup" className="block">
+                  <Button className="w-full h-12 text-lg font-semibold mt-6">
+                    Sign Up as Institution
                   </Button>
                 </Link>
               </CardContent>

@@ -20,10 +20,10 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
-import { RadioGroup } from "@/components/ui/radio-group";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Home as HomeIcon,
@@ -81,6 +81,8 @@ interface DashboardState {
   showMessaging: boolean;
   selectedTutor: TutorProfile | null;
   showTutorProfile: boolean;
+  showRequirementModal: boolean;
+  refreshRequirements: boolean;
 }
 
 export default function StudentDashboard() {
@@ -100,6 +102,8 @@ export default function StudentDashboard() {
     showMessaging: false,
     selectedTutor: null,
     showTutorProfile: false,
+    showRequirementModal: false,
+    refreshRequirements: false,
   });
 
   const openChatWithTutor = async (tutorUserId: string) => {
@@ -234,20 +238,29 @@ export default function StudentDashboard() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const { data: notificationsData } = await supabase
-          .from('notifications')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('type', 'message')
-          .order('created_at', { ascending: false })
-          .limit(5);
+        try {
+          const { data: notificationsData, error: notificationsError } = await supabase
+            .from('notifications')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('type', 'message')
+            .order('created_at', { ascending: false })
+            .limit(5);
 
-        if (notificationsData) {
-          setNotifications(notificationsData);
+          if (notificationsError) {
+            console.log('Notifications table error:', notificationsError.message);
+            setNotifications([]);
+          } else if (notificationsData) {
+            setNotifications(notificationsData);
+          }
+        } catch (tableError) {
+          console.log('Notifications table not available:', tableError);
+          setNotifications([]);
         }
       }
     } catch (error) {
       console.error('Error loading notifications:', error);
+      setNotifications([]);
     }
   };
 
@@ -256,15 +269,28 @@ export default function StudentDashboard() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      const { count, error } = await supabase
-        .from('messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('receiver_id', user.id)
-        .eq('read', false);
-      if (error) throw error;
-      setUnreadCount(count || 0);
+      
+      // Check if messages table exists and has the expected structure
+      try {
+        const { count, error } = await supabase
+          .from('messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('receiver_id', user.id)
+          .eq('read', false);
+          
+        if (error) {
+          console.log('Messages table error:', error.message);
+          setUnreadCount(0);
+        } else {
+          setUnreadCount(count || 0);
+        }
+      } catch (tableError) {
+        console.log('Messages table not available:', tableError);
+        setUnreadCount(0);
+      }
     } catch (err) {
       console.error('Error loading unread messages count (student):', err);
+      setUnreadCount(0);
     }
   };
 
@@ -332,6 +358,7 @@ export default function StudentDashboard() {
       // First, try to get personalized recommendations based on search history
       try {
         // Check if search history table exists and get recent searches
+        // Note: search_history table might not exist, so we'll handle the error gracefully
         const { data: searchHistory, error: searchError } = await supabase
           .from('search_history')
           .select('*')
@@ -339,7 +366,9 @@ export default function StudentDashboard() {
           .order('created_at', { ascending: false })
           .limit(10);
 
-        if (!searchError && searchHistory && searchHistory.length > 0) {
+        if (searchError) {
+          console.log('Search history table not available or error occurred:', searchError.message);
+        } else if (searchHistory && searchHistory.length > 0) {
           // Extract subjects and preferences from search history
           const searchPreferences = searchHistory.reduce((acc, search) => {
             if (search.subjects) {
@@ -372,16 +401,20 @@ export default function StudentDashboard() {
             .slice(0, 2)
             .map(([city]) => city);
 
-          // Build personalized query
+          // Build personalized query - now we need to query based on JSONB fields
           let personalizedQuery = supabase
             .from("tutor_profiles")
             .select("*");
 
-          // Add filters based on preferences
+          // Add filters based on preferences - using the restored fields
           if (topSubjects.length > 0) {
+            // Check if any of the top subjects exist in the subjects array
             personalizedQuery = personalizedQuery.overlaps('subjects', topSubjects);
+            console.log('Top subjects for filtering:', topSubjects);
           }
+          
           if (topTeachingModes.length > 0) {
+            // Check if teaching_mode matches any of the top modes
             personalizedQuery = personalizedQuery.in('teaching_mode', topTeachingModes);
           }
 
@@ -391,55 +424,495 @@ export default function StudentDashboard() {
             recommendedTutors = personalizedTutors;
           }
         }
-      } catch (searchHistoryError) {
-        console.log('Search history not available, using general recommendations');
-      }
+              } catch (searchHistoryError) {
+          console.log('Search history not available, using general recommendations');
+          console.log('Search history error:', searchHistoryError);
+        }
 
       // If no personalized recommendations, fall back to general recommendations
       if (recommendedTutors.length === 0) {
-        const { data: allTutorsData, error: allTutorsError } = await supabase
-          .from("tutor_profiles")
-          .select("*")
-          .order('rating', { ascending: false })
-          .limit(6);
+        console.log('No personalized recommendations, loading general tutors...');
+        try {
+          const { data: allTutorsData, error: allTutorsError } = await supabase
+            .from("tutor_profiles")
+            .select("*")
+            .order('rating', { ascending: false })
+            .limit(6);
 
-        if (allTutorsError) {
-          console.error("Error loading general tutors:", allTutorsError);
-          return;
-        }
-
-        if (allTutorsData) {
-          recommendedTutors = allTutorsData;
+          if (allTutorsError) {
+            console.error("Error loading general tutors:", allTutorsError);
+            console.log("Tutor profiles table might have structure issues or be empty");
+          } else if (allTutorsData) {
+            console.log('General tutors loaded:', allTutorsData.length);
+            recommendedTutors = allTutorsData;
+          } else {
+            console.log('No general tutors found');
+          }
+        } catch (tutorError) {
+          console.error("Exception while loading tutors:", tutorError);
         }
       }
 
       // Enrich tutor data with profile information
       if (recommendedTutors.length > 0) {
+        console.log('Found tutors to enrich:', recommendedTutors.length);
+        console.log('Sample tutor data:', recommendedTutors[0]);
+        
         try {
+          // First, try to get all profiles to see what's available
+          const { data: allProfiles, error: allProfilesError } = await supabase
+            .from("profiles")
+            .select("user_id, full_name, city, area, role, profile_photo_url, gender");
+
+          if (allProfilesError) {
+            console.error('Error loading all profiles:', allProfilesError);
+          } else {
+            console.log('All profiles loaded:', allProfiles?.length || 0);
+            console.log('Sample profile:', allProfiles?.[0]);
+            
+            // Debug: Check what roles exist in the database
+            if (allProfiles && allProfiles.length > 0) {
+              const roles = [...new Set(allProfiles.map(p => p.role))];
+              console.log('Available roles in database:', roles);
+            }
+          }
+
+          // Now try to get tutor profiles specifically - try multiple role variations
           const { data: profilesData, error: profilesError } = await supabase
             .from("profiles")
-            .select("user_id, full_name, city, area, role, profile_photo_url")
-            .eq("role", "tutor");
+            .select("user_id, full_name, city, area, role, profile_photo_url, gender")
+            .or("role.eq.tutor,role.eq.teacher");
 
           if (!profilesError && profilesData) {
+            console.log('Found tutor profiles to enrich with:', profilesData.length);
+            console.log('Sample tutor profile:', profilesData[0]);
             const profilesMap = new Map(profilesData.map(profile => [profile.user_id, profile]));
             
-            const enrichedTutors = recommendedTutors.map(tutor => ({
-              ...tutor,
-              profile: profilesMap.get(tutor.user_id) || null
-            }));
+            const enrichedTutors = recommendedTutors.map(tutor => {
+              const profile = profilesMap.get(tutor.user_id);
+              console.log(`Enriching tutor ${tutor.user_id}:`, profile);
+              console.log(`Tutor data:`, tutor);
+              return {
+                ...tutor,
+                profile: profile || null
+              };
+            });
             
+            console.log('Enriched tutors:', enrichedTutors);
             setTutors(enrichedTutors);
           } else {
-            setTutors(recommendedTutors);
+            console.log('No tutor profiles found, trying alternative approach...');
+            
+            // Alternative: try to get profiles by user_id from tutor_profiles (with role filtering)
+            const tutorUserIds = recommendedTutors.map(t => t.user_id);
+            console.log('Tutor user IDs:', tutorUserIds);
+            
+            // First try with strict role filtering
+            const { data: alternativeProfiles, error: alternativeError } = await supabase
+              .from("profiles")
+              .select("user_id, full_name, city, area, role, profile_photo_url, gender")
+              .in("user_id", tutorUserIds)
+              .or("role.eq.tutor,role.eq.teacher");
+              
+            if (!alternativeError && alternativeProfiles && alternativeProfiles.length > 0) {
+              console.log('Found alternative profiles with strict filtering:', alternativeProfiles.length);
+              console.log('Alternative profiles sample:', alternativeProfiles[0]);
+              const profilesMap = new Map(alternativeProfiles.map(profile => [profile.user_id, profile]));
+              
+              // Filter out tutors that don't have valid tutor profiles
+              const validTutors = recommendedTutors.filter(tutor => {
+                const profile = profilesMap.get(tutor.user_id);
+                return profile && (profile.role === "tutor" || profile.role === "teacher");
+              });
+              
+              const enrichedTutors = validTutors.map(tutor => ({
+                ...tutor,
+                profile: profilesMap.get(tutor.user_id) || null
+              }));
+              
+              console.log('Enriched tutors (alternative):', enrichedTutors);
+              setTutors(enrichedTutors);
+            } else {
+              console.log('Strict role filtering failed, trying without role filter...');
+              console.log('Alternative error:', alternativeError);
+              
+              // Fallback: get all profiles for these user IDs without role filtering
+              const { data: fallbackProfiles, error: fallbackError } = await supabase
+                .from("profiles")
+                .select("user_id, full_name, city, area, role, profile_photo_url, gender")
+                .in("user_id", tutorUserIds);
+                
+              if (!fallbackError && fallbackProfiles && fallbackProfiles.length > 0) {
+                console.log('Found fallback profiles:', fallbackProfiles.length);
+                const profilesMap = new Map(fallbackProfiles.map(profile => [profile.user_id, profile]));
+                
+                // Filter to only include actual tutors and enrich their data
+                const validTutors = recommendedTutors.filter(tutor => {
+                  const profile = profilesMap.get(tutor.user_id);
+                  return profile && (profile.role === "tutor" || profile.role === "teacher");
+                });
+                
+                const enrichedTutors = validTutors.map(tutor => ({
+                  ...tutor,
+                  profile: profilesMap.get(tutor.user_id) || null
+                }));
+                
+                console.log('Enriched tutors (fallback):', enrichedTutors);
+                setTutors(enrichedTutors);
+              } else {
+                console.log('Fallback approach also failed, trying one more approach...');
+                console.log('Fallback error:', fallbackError);
+                
+                // Last resort: try to get profiles for all tutor user IDs without any filtering
+                const { data: lastResortProfiles, error: lastResortError } = await supabase
+                  .from("profiles")
+                  .select("user_id, full_name, city, area, role, profile_photo_url, gender")
+                  .in("user_id", tutorUserIds);
+                  
+                if (!lastResortError && lastResortProfiles && lastResortProfiles.length > 0) {
+                  console.log('Last resort profiles found:', lastResortProfiles.length);
+                  const profilesMap = new Map(lastResortProfiles.map(profile => [profile.user_id, profile]));
+                  
+                  // Filter to only include actual tutors and enrich their data
+                  const validTutors = recommendedTutors.filter(tutor => {
+                    const profile = profilesMap.get(tutor.user_id);
+                    return profile && (profile.role === "tutor" || profile.role === "teacher");
+                  });
+                  
+                  const enrichedTutors = validTutors.map(tutor => ({
+                    ...tutor,
+                    profile: profilesMap.get(tutor.user_id) || null
+                  }));
+                  
+                  console.log('Enriched tutors (last resort):', enrichedTutors);
+                  setTutors(enrichedTutors);
+                } else {
+                  console.log('All approaches failed, setting tutors without enrichment');
+                  console.log('Last resort error:', lastResortError);
+                  setTutors(recommendedTutors);
+                }
+              }
+            }
           }
         } catch (enrichError) {
           console.warn("Could not enrich tutor data with profiles:", enrichError);
           setTutors(recommendedTutors);
         }
+      } else {
+        console.log('No tutors found to display');
+        setTutors([]);
+      }
+      
+      // Final fallback: if we still have no tutors, try to load any available tutors
+      if (recommendedTutors.length === 0) {
+        console.log('Trying final fallback to load any available tutors...');
+        try {
+          const { data: fallbackTutors, error: fallbackError } = await supabase
+            .from("tutor_profiles")
+            .select("*")
+            .limit(10);
+            
+          if (!fallbackError && fallbackTutors && fallbackTutors.length > 0) {
+            console.log('Fallback tutors loaded:', fallbackTutors.length);
+            // Enrich with basic profile info - only for actual tutors
+            const { data: basicProfiles } = await supabase
+              .from("profiles")
+              .select("user_id, full_name, profile_photo_url, role")
+              .or("role.eq.tutor,role.eq.teacher");
+              
+            if (basicProfiles) {
+              const profilesMap = new Map(basicProfiles.map(profile => [profile.user_id, profile]));
+              // Filter out any fallback tutors that don't have valid tutor profiles
+              const validFallbackTutors = fallbackTutors.filter(tutor => {
+                const profile = profilesMap.get(tutor.user_id);
+                return profile && (profile.role === "tutor" || profile.role === "teacher");
+              });
+              
+              const enrichedFallbackTutors = validFallbackTutors.map(tutor => ({
+                ...tutor,
+                profile: profilesMap.get(tutor.user_id) || null
+              }));
+              setTutors(enrichedFallbackTutors);
+            } else {
+              // If no tutor profiles found, don't show any tutors
+              setTutors([]);
+            }
+          }
+        } catch (fallbackErr) {
+          console.error('Fallback tutor loading failed:', fallbackErr);
+        }
       }
     } catch (error) {
       console.error("Error loading tutors:", error);
+    }
+  };
+
+  const handlePostRequirement = async (requirementData: any) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast({
+          title: "Error",
+          description: "You must be logged in to post a requirement",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Step 1: Save the requirement to the database
+      let requirement;
+      try {
+        const { data: savedRequirement, error: requirementError } = await supabase
+          .from('requirements')
+          .insert([{
+            student_id: user.id,
+            category: requirementData.category,
+            subject: requirementData.subject,
+            location: requirementData.location,
+            description: requirementData.description,
+            preferred_teaching_mode: requirementData.preferredTeachingMode,
+            preferred_time: requirementData.preferredTime,
+            budget_range: requirementData.budgetRange,
+            urgency: requirementData.urgency,
+            additional_requirements: requirementData.additionalRequirements,
+            // Category-specific fields
+            class_level: requirementData.classLevel || null,
+            board: requirementData.board || null,
+            exam_preparation: requirementData.examPreparation || null,
+            skill_level: requirementData.skillLevel || null,
+            age_group: requirementData.ageGroup || null,
+            specific_topics: requirementData.specificTopics || null,
+            learning_goals: requirementData.learningGoals || null,
+            status: 'active',
+            created_at: new Date().toISOString()
+          }])
+          .select()
+          .single();
+
+        if (requirementError) {
+          console.error("Error saving requirement:", requirementError);
+          if (requirementError.code === '42P01') { // Table doesn't exist
+            toast({
+              title: "Database Setup Required",
+              description: "Please run the requirements system migration first to create the necessary database tables.",
+              variant: "destructive",
+            });
+            return;
+          }
+          throw new Error("Failed to save requirement");
+        }
+        
+        requirement = savedRequirement;
+      } catch (error) {
+        console.error("Error saving requirement:", error);
+        toast({
+          title: "Error",
+          description: "Failed to save requirement. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Step 2: Find relevant tutors based on the requirement
+      const matchingTutors = await findMatchingTutors(requirementData);
+
+      // Step 3: Send notifications to matching tutors
+      if (matchingTutors.length > 0 && requirement) {
+        await sendTutorNotifications(requirement.id, matchingTutors, requirementData);
+      }
+
+      // Step 4: Show success message with tutor count
+      toast({
+        title: "Requirement Posted Successfully!",
+        description: `Your requirement has been sent to ${matchingTutors.length} relevant tutors.`,
+      });
+
+      setState(prev => ({ ...prev, showRequirementModal: false }));
+      
+      // Refresh requirements list if on requirements tab
+      if (state.activeTab === "requirements") {
+        // Trigger a refresh of the requirements list
+        // The RequirementsDashboard component will re-render and call loadRequirements
+        setState(prev => ({ ...prev, refreshRequirements: !prev.refreshRequirements }));
+      }
+
+    } catch (error) {
+      console.error("Error posting requirement:", error);
+      toast({
+        title: "Error",
+        description: "Failed to post requirement. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Find tutors that match the requirement criteria
+  const findMatchingTutors = async (requirementData: any) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return [];
+
+      // Build the query to find matching tutors
+      let query = supabase
+        .from('tutor_profiles')
+        .select(`
+          *,
+          profile:user_id(
+            user_id,
+            full_name,
+            city,
+            area,
+            role,
+            profile_photo_url,
+            gender
+          )
+        `)
+        .eq('profile.role', 'tutor')
+        .eq('is_verified', true)
+        .eq('is_active', true);
+
+      // Filter by subject/skill match
+      if (requirementData.subject) {
+        query = query.or(`subjects.cs.{${requirementData.subject}},specializations.cs.{${requirementData.subject}}`);
+      }
+
+      // Filter by location (city or area)
+      if (requirementData.location && requirementData.location !== 'other') {
+        query = query.or(`profile.city.eq.${requirementData.location},profile.area.eq.${requirementData.location}`);
+      }
+
+      // Filter by teaching mode preference
+      if (requirementData.preferredTeachingMode && requirementData.preferredTeachingMode !== 'both') {
+        query = query.eq('teaching_mode', requirementData.preferredTeachingMode);
+      }
+
+      // Filter by budget range
+      if (requirementData.budgetRange) {
+        const [minBudget, maxBudget] = requirementData.budgetRange.split('-').map((b: string) => 
+          b === '+' ? 999999 : parseInt(b.replace('₹', '').replace(',', ''))
+        );
+        query = query.gte('hourly_rate_min', minBudget).lte('hourly_rate_max', maxBudget);
+      }
+
+      // Category-specific filtering
+      if (requirementData.category === 'academic') {
+        if (requirementData.classLevel) {
+          query = query.eq('academic_levels', requirementData.classLevel);
+        }
+        if (requirementData.board) {
+          query = query.eq('boards', requirementData.board);
+        }
+      }
+
+      if (requirementData.category === 'languages') {
+        if (requirementData.skillLevel) {
+          query = query.eq('language_levels', requirementData.skillLevel);
+        }
+      }
+
+      if (requirementData.category === 'test_preparation') {
+        if (requirementData.examPreparation) {
+          query = query.eq('exam_preparation_levels', requirementData.examPreparation);
+        }
+      }
+
+      const { data: tutors, error } = await query.limit(50);
+
+      if (error) {
+        console.error("Error finding matching tutors:", error);
+        return [];
+      }
+
+      // Additional client-side filtering for complex criteria
+      return tutors?.filter(tutor => {
+        // Filter by age group if specified
+        if (requirementData.ageGroup && tutor.age_groups) {
+          if (!tutor.age_groups.includes(requirementData.ageGroup)) {
+            return false;
+          }
+        }
+
+        // Filter by skill level compatibility
+        if (requirementData.skillLevel && tutor.skill_levels) {
+          const tutorLevels = tutor.skill_levels;
+          const requiredLevel = requirementData.skillLevel;
+          
+          // Map skill levels to numeric values for comparison
+          const levelMap: Record<string, number> = {
+            'beginner': 1, 'elementary': 1,
+            'intermediate': 2, 'upper_intermediate': 2,
+            'advanced': 3, 'expert': 4
+          };
+          
+          const requiredLevelNum = levelMap[requiredLevel] || 1;
+          const tutorMaxLevel = Math.max(...tutorLevels.map((l: string) => levelMap[l] || 1));
+          
+          // Tutor should be able to teach at the required level
+          if (tutorMaxLevel < requiredLevelNum) {
+            return false;
+          }
+        }
+
+        return true;
+      }) || [];
+
+    } catch (error) {
+      console.error("Error in findMatchingTutors:", error);
+      return [];
+    }
+  };
+
+  // Send notifications to matching tutors
+  const sendTutorNotifications = async (requirementId: string, tutors: any[], requirementData: any) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const notifications = tutors.map(tutor => ({
+        user_id: tutor.user_id,
+        type: 'new_requirement',
+        title: 'New Learning Requirement Available',
+        message: `A student is looking for ${requirementData.subject} tutoring in ${requirementData.location}. Click to view details.`,
+        data: {
+          requirement_id: requirementId,
+          student_id: user.id,
+          category: requirementData.category,
+          subject: requirementData.subject,
+          location: requirementData.location,
+          budget_range: requirementData.budgetRange,
+          urgency: requirementData.urgency
+        },
+        is_read: false,
+        created_at: new Date().toISOString()
+      }));
+
+      // Insert notifications
+      const { error: notificationError } = await supabase
+        .from('notifications')
+        .insert(notifications);
+
+      if (notificationError) {
+        console.error("Error sending notifications:", notificationError);
+      }
+
+      // Also create requirement_tutor_matches for tracking
+      const matches = tutors.map(tutor => ({
+        requirement_id: requirementId,
+        tutor_id: tutor.user_id,
+        status: 'pending',
+        created_at: new Date().toISOString()
+      }));
+
+      const { error: matchError } = await supabase
+        .from('requirement_tutor_matches')
+        .insert(matches);
+
+      if (matchError) {
+        console.error("Error creating tutor matches:", matchError);
+      }
+
+    } catch (error) {
+      console.error("Error in sendTutorNotifications:", error);
     }
   };
 
@@ -996,7 +1469,10 @@ export default function StudentDashboard() {
             )}
 
             {state.activeTab === "requirements" && (
-              <RequirementsDashboard />
+              <RequirementsDashboard 
+                onPostRequirement={() => setState(prev => ({ ...prev, showRequirementModal: true }))}
+                refreshTrigger={state.refreshRequirements}
+              />
             )}
 
             {state.activeTab === "messages" && (
@@ -1029,6 +1505,14 @@ export default function StudentDashboard() {
           studentProfile={studentProfile}
           onUpdate={updateProfile}
           onClose={() => setState(prev => ({ ...prev, showProfileDialog: false }))}
+        />
+      )}
+
+      {/* Requirement Posting Modal */}
+      {state.showRequirementModal && (
+        <RequirementPostingModal
+          onClose={() => setState(prev => ({ ...prev, showRequirementModal: false }))}
+          onPostRequirement={handlePostRequirement}
         />
       )}
     </div>
@@ -1298,7 +1782,11 @@ function DashboardHome({
           <Search className="h-6 w-6" />
           Find Tutors
         </Button>
-        <Button size="lg" className="bg-secondary text-secondary-foreground flex flex-col items-center justify-center gap-2 h-28">
+        <Button 
+          size="lg" 
+          className="bg-secondary text-secondary-foreground flex flex-col items-center justify-center gap-2 h-28"
+          onClick={() => setState(prev => ({ ...prev, showRequirementModal: true }))}
+        >
           <List className="h-6 w-6" />
           Post Requirement
         </Button>
@@ -1436,7 +1924,7 @@ function DashboardHome({
                   />
                   <AvatarFallback>{tutor.profile?.full_name?.split(" ").map(n => n[0]).join("") || tutor.user_id.slice(0, 2).toUpperCase()}</AvatarFallback>
                 </Avatar>
-                <span className="font-semibold text-sm">{tutor.profile?.full_name || ""}</span>
+                <span className="font-semibold text-sm">{tutor.profile?.full_name || `Tutor ${tutor.user_id.slice(0, 8)}`}</span>
                 <span className="text-muted-foreground text-xs">{tutor.teaching_mode || ""}</span>
                 <div className="flex items-center gap-1 mt-1">
                   <Star className="h-3 w-3 text-yellow-500" />
@@ -1632,24 +2120,29 @@ function TutorSearch({
 
   // Handle experience level toggle
   const toggleExperienceLevel = (level: string) => {
-    setExperienceLevels(prev => 
-      prev.includes(level) 
+    setExperienceLevels(prev => {
+      const newLevels = prev.includes(level) 
         ? prev.filter(l => l !== level)
-        : [...prev, level]
-    );
+        : [...prev, level];
+      console.log('Experience levels updated:', newLevels);
+      return newLevels;
+    });
   };
 
   // Handle availability slot toggle
   const toggleAvailabilitySlot = (slot: string) => {
-    setAvailabilitySlots(prev => 
-      prev.includes(slot) 
+    setAvailabilitySlots(prev => {
+      const newSlots = prev.includes(slot) 
         ? prev.filter(s => s !== slot)
-        : [...prev, slot]
-    );
+        : [...prev, slot];
+      console.log('Availability slots updated:', newSlots);
+      return newSlots;
+    });
   };
 
   // Clear all filters
   const clearAllFilters = () => {
+    console.log('Clearing all filters');
     setSearchTerm("");
     setSelectedSubject("all");
     setPriceRange([0, 5000]);
@@ -1815,11 +2308,11 @@ function TutorSearch({
     const tutorText = [
       tutor.bio || '',
       tutor.teaching_mode || '',
-      (tutor.qualifications as any)?.subjects?.join(' ') || '',
-      (tutor.qualifications as any)?.student_levels?.join(' ') || '',
-      (tutor.qualifications as any)?.curriculum?.join(' ') || '',
-      (tutor.qualifications as any)?.highest_qualification || '',
-      (tutor.qualifications as any)?.university || '',
+      Array.isArray(tutor.subjects) ? tutor.subjects.join(' ') : '',
+      Array.isArray(tutor.student_levels) ? tutor.student_levels.join(' ') : '',
+      Array.isArray(tutor.curriculum) ? tutor.curriculum.join(' ') : '',
+      tutor.highest_qualification || '',
+      tutor.university || '',
     ].join(' ').toLowerCase();
 
     const result = searchTerms.every(term => tutorText.includes(term));
@@ -1828,26 +2321,51 @@ function TutorSearch({
   };
 
   const filteredTutors = tutors.filter(tutor => {
+    // Debug: Log tutor data structure
+    if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+      console.log('Sample tutor data structure:', {
+        id: tutor.id,
+        user_id: tutor.user_id,
+        bio: tutor.bio,
+        experience_years: tutor.experience_years,
+        hourly_rate_min: tutor.hourly_rate_min,
+        teaching_mode: tutor.teaching_mode,
+        rating: tutor.rating,
+        verified: tutor.verified,
+        qualifications: tutor.qualifications,
+        profile: tutor.profile
+      });
+    }
     
     const matchesSearch = matchesKeywords(tutor, searchTerm);
     
     // Subject filter - check if tutor teaches the selected subject
     let matchesSubject = true;
     if (selectedSubject !== "all") {
-      const tutorSubjects = (tutor.qualifications as any)?.subjects || [];
-      matchesSubject = tutorSubjects.includes(selectedSubject);
+      const tutorSubjects = tutor.subjects || [];
+      // Check if the selected subject exists in tutor's subjects array
+      matchesSubject = Array.isArray(tutorSubjects) && tutorSubjects.includes(selectedSubject);
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Subject filter:', { selectedSubject, tutorSubjects, matchesSubject });
+      }
+    } else {
+      // If "all" is selected, always match
+      matchesSubject = true;
     }
     
     // Price range filter (new slider-based)
     let matchesPrice = true;
     const tutorRate = tutor.hourly_rate_min || 0;
     matchesPrice = tutorRate >= priceRange[0] && tutorRate <= priceRange[1];
+    if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+      console.log('Price filter:', { priceRange, tutorRate, matchesPrice });
+    }
     
     // Experience filter (new checkbox-based)
     let matchesExperience = true;
     if (experienceLevels.length > 0) {
       const tutorExperience = tutor.experience_years || 0;
-      const tutorQualification = (tutor.qualifications as any)?.highest_qualification || '';
+      const tutorQualification = tutor.highest_qualification || '';
       
       matchesExperience = experienceLevels.some(level => {
         if (level === "Beginner (0-2 years)") return tutorExperience <= 2;
@@ -1857,6 +2375,9 @@ function TutorSearch({
         if (level === "Industry Professional") return tutorQualification.toLowerCase().includes('industry') || tutorQualification.toLowerCase().includes('professional');
         return false;
       });
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Experience filter:', { experienceLevels, tutorExperience, tutorQualification, matchesExperience });
+      }
     }
     
     // Class type filter
@@ -1868,6 +2389,9 @@ function TutorSearch({
       } else if (classType === "offline") {
         matchesClassType = tutorMode.toLowerCase().includes('offline') || tutorMode.toLowerCase().includes('in-person');
       }
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Class type filter:', { classType, tutorMode, matchesClassType });
+      }
     }
     
     // Gender filter
@@ -1875,28 +2399,49 @@ function TutorSearch({
     if (tutorGender !== "any") {
       const tutorGenderProfile = (tutor.profile as any)?.gender || '';
       matchesGender = tutorGenderProfile.toLowerCase() === tutorGender.toLowerCase();
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Gender filter:', { tutorGender, tutorGenderProfile, matchesGender });
+      }
     }
     
     // Rating filter
     let matchesRating = true;
     if (minRating > 0) {
       matchesRating = (tutor.rating || 0) >= minRating;
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Rating filter:', { minRating, tutorRating: tutor.rating, matchesRating });
+      }
     }
     
-    // Verified only filter
+    // Verified only filter - now using the verified field from tutor_profiles
     let matchesVerified = true;
     if (verifiedOnly) {
-      matchesVerified = (tutor.profile as any)?.is_verified || false;
+      matchesVerified = tutor.verified === true;
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Verified filter:', { verifiedOnly, tutorVerified: tutor.verified, matchesVerified });
+      }
     }
     
-    // Demo available filter
+    // Demo available filter - check if demo class fee is set
     let matchesDemo = true;
     if (demoAvailable) {
-      matchesDemo = (tutor.profile as any)?.demo_available || false;
+      const demoFee = tutor.demo_class_fee;
+      matchesDemo = demoFee && demoFee !== '' && demoFee !== '0';
+      if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+        console.log('Demo filter:', { demoAvailable, demoFee, matchesDemo });
+      }
     }
     
     const finalResult = matchesSearch && matchesSubject && matchesPrice && matchesExperience && 
                        matchesClassType && matchesGender && matchesRating && matchesVerified && matchesDemo;
+    
+    if (tutors.length > 0 && tutors.indexOf(tutor) === 0) {
+      console.log('Final filter result:', { 
+        matchesSearch, matchesSubject, matchesPrice, matchesExperience, 
+        matchesClassType, matchesGender, matchesRating, matchesVerified, matchesDemo, 
+        finalResult 
+      });
+    }
     
     return finalResult;
   });
@@ -1928,10 +2473,31 @@ function TutorSearch({
     const totalFiltered = sortedTutors.length;
     const currentTotal = currentPage * resultsPerPage;
     setHasMoreResults(currentTotal < totalFiltered);
+    console.log('Filtering results:', { 
+      totalTutors: tutors.length, 
+      totalFiltered, 
+      currentPage, 
+      resultsPerPage, 
+      hasMore: currentTotal < totalFiltered 
+    });
   }, [sortedTutors, currentPage, resultsPerPage]);
 
   // Reset pagination when filters change
   useEffect(() => {
+    console.log('Filters changed, resetting pagination:', {
+      searchTerm,
+      selectedSubject,
+      classType,
+      priceRange,
+      tutorGender,
+      experienceLevels,
+      minRating,
+      availabilitySlots,
+      maxDistance,
+      verifiedOnly,
+      demoAvailable,
+      sortBy
+    });
     resetPagination();
   }, [searchTerm, selectedSubject, classType, priceRange, tutorGender, experienceLevels, minRating, availabilitySlots, maxDistance, verifiedOnly, demoAvailable, sortBy]);
 
@@ -2190,12 +2756,16 @@ function TutorSearch({
                     <div className="mt-2 ml-4 space-y-1">
                       {subjects.map(subject => (
                         <label key={subject} className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={selectedSubject === subject}
-                            onChange={() => setSelectedSubject(selectedSubject === subject ? "all" : subject)}
-                            className="rounded border-border"
-                          />
+                                                  <input
+                          type="checkbox"
+                          checked={selectedSubject === subject}
+                          onChange={() => {
+                            const newSubject = selectedSubject === subject ? "all" : subject;
+                            console.log('Subject filter changed:', { from: selectedSubject, to: newSubject });
+                            setSelectedSubject(newSubject);
+                          }}
+                          className="rounded border-border"
+                        />
                           {subject}
                         </label>
                       ))}
@@ -2212,18 +2782,21 @@ function TutorSearch({
                   <Monitor className="h-5 w-5 text-primary" />
                   Class Type
                 </h3>
-                <RadioGroup value={classType} onValueChange={setClassType}>
+                <RadioGroup value={classType} onValueChange={(value) => {
+                  console.log('Class type changed:', { from: classType, to: value });
+                  setClassType(value);
+                }}>
                   <div className="space-y-2">
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="both" name="classType" />
+                      <RadioGroupItem value="both" id="classType-both" />
                       Both Online & Offline
                     </label>
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="online" name="classType" />
+                      <RadioGroupItem value="online" id="classType-online" />
                       Online Only
                     </label>
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="offline" name="classType" />
+                      <RadioGroupItem value="offline" id="classType-offline" />
                       Offline Only
                     </label>
                   </div>
@@ -2238,7 +2811,10 @@ function TutorSearch({
                 <div className="px-2">
                   <Slider
                     value={priceRange}
-                    onValueChange={setPriceRange}
+                    onValueChange={(value) => {
+                      console.log('Price range changed:', { from: priceRange, to: value });
+                      setPriceRange(value);
+                    }}
                     max={5000}
                     min={0}
                     step={100}
@@ -2259,18 +2835,21 @@ function TutorSearch({
                   <User className="h-5 w-5 text-primary" />
                   Tutor Gender
                 </h3>
-                <RadioGroup value={tutorGender} onValueChange={setTutorGender}>
+                <RadioGroup value={tutorGender} onValueChange={(value) => {
+                  console.log('Tutor gender changed:', { from: tutorGender, to: value });
+                  setTutorGender(value);
+                }}>
                   <div className="space-y-2">
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="any" name="gender" />
+                      <RadioGroupItem value="any" id="gender-any" />
                       Any Gender
                     </label>
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="male" name="gender" />
+                      <RadioGroupItem value="male" id="gender-male" />
                       Male
                     </label>
                     <label className="flex items-center gap-2">
-                      <input type="radio" value="female" name="gender" />
+                      <RadioGroupItem value="female" id="gender-female" />
                       Female
                     </label>
                   </div>
@@ -2308,7 +2887,10 @@ function TutorSearch({
                 <div className="px-2">
                   <Slider
                     value={[minRating]}
-                    onValueChange={(value) => setMinRating(value[0])}
+                    onValueChange={(value) => {
+                      console.log('Rating filter changed:', { from: minRating, to: value[0] });
+                      setMinRating(value[0]);
+                    }}
                     max={5}
                     min={0}
                     step={0.5}
@@ -2351,7 +2933,10 @@ function TutorSearch({
                 <div className="px-2">
                   <Slider
                     value={[maxDistance]}
-                    onValueChange={(value) => setMaxDistance(value[0])}
+                    onValueChange={(value) => {
+                      console.log('Distance filter changed:', { from: maxDistance, to: value[0] });
+                      setMaxDistance(value[0]);
+                    }}
                     max={100}
                     min={5}
                     step={5}
@@ -2373,7 +2958,10 @@ function TutorSearch({
                     <input
                       type="checkbox"
                       checked={verifiedOnly}
-                      onChange={(e) => setVerifiedOnly(e.target.checked)}
+                      onChange={(e) => {
+                        console.log('Verified filter changed:', { from: verifiedOnly, to: e.target.checked });
+                        setVerifiedOnly(e.target.checked);
+                      }}
                       className="rounded border-border"
                     />
                     Verified Tutors Only
@@ -2382,7 +2970,10 @@ function TutorSearch({
                     <input
                       type="checkbox"
                       checked={demoAvailable}
-                      onChange={(e) => setDemoAvailable(e.target.checked)}
+                      onChange={(e) => {
+                        console.log('Demo filter changed:', { from: demoAvailable, to: e.target.checked });
+                        setDemoAvailable(e.target.checked);
+                      }}
                       className="rounded border-border"
                     />
                     Demo Class Available
@@ -2435,7 +3026,10 @@ function TutorSearch({
               <Label className="text-sm font-medium whitespace-nowrap">Sort by:</Label>
               <select
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
+                onChange={(e) => {
+                  console.log('Sort changed:', { from: sortBy, to: e.target.value });
+                  setSortBy(e.target.value);
+                }}
                 className="px-3 py-2 border border-border rounded-md text-sm bg-background min-w-[140px]"
               >
                 <option value="relevance">Relevance</option>
@@ -2453,7 +3047,10 @@ function TutorSearch({
                 <Button
                   variant={viewMode === "grid" ? "default" : "ghost"}
                   size="sm"
-                  onClick={() => setViewMode("grid")}
+                  onClick={() => {
+                    console.log('View mode changed to grid');
+                    setViewMode("grid");
+                  }}
                   className="rounded-none border-0 h-8 px-3"
                 >
                   <Grid className="h-4 w-4" />
@@ -2461,7 +3058,10 @@ function TutorSearch({
                 <Button
                   variant={viewMode === "list" ? "default" : "ghost"}
                   size="sm"
-                  onClick={() => setViewMode("list")}
+                  onClick={() => {
+                    console.log('View mode changed to list');
+                    setViewMode("list");
+                  }}
                   className="rounded-none border-0 h-8 px-3"
                 >
                   <List className="h-4 w-4" />
@@ -2528,7 +3128,7 @@ function TutorSearch({
                   <Avatar className="h-20 w-20">
                     <AvatarImage 
                       src={tutor.profile?.profile_photo_url || ""} 
-                      alt={`${tutor.profile?.full_name || "Tutor"}'s profile photo`}
+                      alt={`${tutor.profile?.full_name || `Tutor ${tutor.user_id.slice(0, 8)}`}'s profile photo`}
                     />
                     <AvatarFallback className="text-xl">
                       {tutor.profile?.full_name?.split(" ").map(n => n[0]).join("") || tutor.user_id.slice(0, 2).toUpperCase()}
@@ -2543,7 +3143,7 @@ function TutorSearch({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-3 mb-1">
                         <h3 className="text-lg font-semibold text-foreground break-words">
-                          {tutor.profile?.full_name || "Tutor Name"}
+                          {tutor.profile?.full_name || `Tutor ${tutor.user_id.slice(0, 8)}`}
                         </h3>
                         <Button
                           variant="ghost"
@@ -2703,7 +3303,7 @@ function TutorSearch({
                     </Avatar>
                     <div>
                       <CardTitle className="text-lg break-words">
-                        {tutor.profile?.full_name || "Tutor Name"}
+                        {tutor.profile?.full_name || `Tutor ${tutor.user_id.slice(0, 8)}`}
                       </CardTitle>
                       <div className="flex items-center gap-2">
                         <Star className="h-4 w-4 text-yellow-500 flex-shrink-0" />
@@ -2732,7 +3332,7 @@ function TutorSearch({
                       <span className="truncate">{tutor.experience_years || 0} years exp.</span>
                     </div>
                     <div className="flex items-center gap-1 min-w-0 flex-1">
-                      <DollarSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                      <IndianRupee className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                       <span className="truncate">₹{tutor.hourly_rate_min || 0}/hr</span>
                     </div>
                   </div>
@@ -3138,7 +3738,7 @@ function TutorSearch({
                     <h4 className="font-semibold mb-2">Pricing</h4>
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
-                        <DollarSign className="h-4 w-4 text-muted-foreground" />
+                        <IndianRupee className="h-4 w-4 text-muted-foreground" />
                         <span>₹{selectedTutorForProfile.hourly_rate_min || 0} - ₹{selectedTutorForProfile.hourly_rate_max || 0} per hour</span>
                       </div>
                     </div>
@@ -5166,11 +5766,12 @@ function HelpSupport() {
 }
 
 // ChatMessages Component
-function ChatMessages({ selectedTutor }: { selectedTutor: TutorProfile }) {
+function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedTutor: TutorProfile; messages?: any[] }) {
   const [messages, setMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [subscription, setSubscription] = useState<any>(null);
 
   useEffect(() => {
     // Cache current user id for render-time checks
@@ -5181,10 +5782,79 @@ function ChatMessages({ selectedTutor }: { selectedTutor: TutorProfile }) {
     loadCurrentUser();
     if (selectedTutor) {
       loadMessages();
-      // Mark messages as read
+      // Mark messages as read and clear notifications
       markMessagesAsRead();
+      // Set up real-time subscription for new messages
+      setupRealtimeSubscription();
     }
+
+    // Cleanup subscription on unmount or tutor change
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+        setSubscription(null);
+      }
+    };
   }, [selectedTutor]);
+
+  // Update messages when external messages change (for instant display)
+  useEffect(() => {
+    if (externalMessages && externalMessages.length > 0) {
+      setMessages(prev => {
+        // Merge external messages with existing ones, avoiding duplicates
+        const allMessages = [...prev];
+        externalMessages.forEach(externalMsg => {
+          if (!allMessages.some(msg => msg.id === externalMsg.id)) {
+            allMessages.push(externalMsg);
+          }
+        });
+        return allMessages.sort((a, b) => 
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      });
+    }
+  }, [externalMessages]);
+
+  // Set up real-time subscription for new messages
+  const setupRealtimeSubscription = () => {
+    if (!selectedTutor || !currentUserId) return;
+
+    // Cleanup existing subscription
+    if (subscription) {
+      subscription.unsubscribe();
+    }
+
+    const newSubscription = supabase
+      .channel(`messages:${currentUserId}:${selectedTutor.user_id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `or(and(sender_id.eq.${currentUserId},receiver_id.eq.${selectedTutor.user_id}),and(sender_id.eq.${selectedTutor.user_id},receiver_id.eq.${currentUserId}))`
+      }, (payload) => {
+        console.log('🔔 [Realtime] New message received:', payload);
+        const newMessage = payload.new;
+        
+        // Add new message to the list
+        setMessages(prev => {
+          // Check if message already exists to avoid duplicates
+          if (prev.some(msg => msg.id === newMessage.id)) {
+            return prev;
+          }
+          return [...prev, newMessage].sort((a, b) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+        });
+
+        // Mark new message as read if it's from tutor
+        if (newMessage.sender_id === selectedTutor.user_id) {
+          markMessagesAsRead();
+        }
+      })
+      .subscribe();
+
+    setSubscription(newSubscription);
+  };
 
   const loadMessages = async () => {
     try {
@@ -5235,6 +5905,19 @@ function ChatMessages({ selectedTutor }: { selectedTutor: TutorProfile }) {
           p_receiver_id: user.id 
         }
       );
+
+      // Clear notifications for this conversation
+      await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('user_id', user.id)
+        .eq('type', 'message')
+        .eq('data->sender_id', selectedTutor.user_id);
+
+      // Update conversations list to reflect read status
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('conversations-updated'));
+      }
     } catch (error) {
       console.error("Error marking messages as read:", error);
     }
@@ -5276,25 +5959,50 @@ function ChatMessages({ selectedTutor }: { selectedTutor: TutorProfile }) {
 }
 
 // Requirements Dashboard Component
-function RequirementsDashboard() {
+function RequirementsDashboard({ onPostRequirement, refreshTrigger }: { onPostRequirement: () => void; refreshTrigger: boolean }) {
   const [requirements, setRequirements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadRequirements();
-  }, []);
+  }, [refreshTrigger]);
 
   const loadRequirements = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // TODO: Implement when requirements table is available
-      // For now, show empty state
-      setRequirements([]);
+      // Check if requirements table exists by trying to query it
+      const { data: requirements, error } = await supabase
+        .from('requirements')
+        .select(`
+          *,
+          responses:requirement_tutor_matches(count)
+        `)
+        .eq('student_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error loading requirements:", error);
+        // If table doesn't exist yet, show empty state
+        if (error.code === '42P01') { // Table doesn't exist
+          console.log("Requirements table not yet created. Run the migration first.");
+        }
+        setRequirements([]);
+      } else {
+        // Transform the data to include response count
+        const transformedRequirements = requirements?.map(req => ({
+          ...req,
+          responses: req.responses?.[0]?.count || 0
+        })) || [];
+        
+        setRequirements(transformedRequirements);
+      }
+      
       setLoading(false);
     } catch (error) {
       console.error("Error loading requirements:", error);
+      setRequirements([]);
       setLoading(false);
     }
   };
@@ -5317,7 +6025,10 @@ function RequirementsDashboard() {
             Manage your tutoring requirements and preferences
           </p>
         </div>
-        <Button className="bg-gradient-primary">
+        <Button 
+          className="bg-gradient-primary"
+          onClick={onPostRequirement}
+        >
           <Plus className="h-4 w-4 mr-2" />
           Post New Requirement
         </Button>
@@ -5354,7 +6065,7 @@ function RequirementsDashboard() {
                   Post your first requirement to find the perfect tutor
                 </p>
               </div>
-              <Button size="sm" className="mt-2">
+              <Button size="sm" className="mt-2" onClick={onPostRequirement}>
                 Post Requirement
               </Button>
             </div>
@@ -5362,5 +6073,1040 @@ function RequirementsDashboard() {
         </Card>
       )}
     </div>
+  );
+}
+
+// Requirement Posting Modal Component
+function RequirementPostingModal({ 
+  onClose, 
+  onPostRequirement 
+}: { 
+  onClose: () => void;
+  onPostRequirement: (data: any) => void;
+}) {
+  const { toast } = useToast();
+  const [formData, setFormData] = useState({
+    category: '',
+    subject: '',
+    location: '',
+    description: '',
+    preferredTeachingMode: 'online',
+    preferredTime: 'flexible',
+    budgetRange: '1000-2000',
+    urgency: 'normal',
+    additionalRequirements: '',
+    // Dynamic fields based on category
+    classLevel: '',
+    board: '',
+    examPreparation: '',
+    skillLevel: '',
+    ageGroup: '',
+    specificTopics: '',
+    learningGoals: ''
+  });
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  // Validation function
+  const validateField = (field: string, value: string): string => {
+    if (!value || value.trim() === '') {
+      return `${field.charAt(0).toUpperCase() + field.slice(1)} is required`;
+    }
+    return '';
+  };
+
+  // Validate all fields
+  const validateForm = (): boolean => {
+    const newErrors: Record<string, string> = {};
+    
+    // Basic required fields
+    newErrors.category = validateField('category', formData.category);
+    newErrors.subject = validateField('subject', formData.subject);
+    newErrors.location = validateField('location', formData.location);
+    newErrors.description = validateField('description', formData.description);
+    
+    // Category-specific validations
+    if (formData.category === 'academic') {
+      newErrors.classLevel = validateField('class level', formData.classLevel);
+      newErrors.board = validateField('board', formData.board);
+    }
+    
+    if (formData.category === 'test_preparation') {
+      newErrors.examPreparation = validateField('exam preparation level', formData.examPreparation);
+      newErrors.specificTopics = validateField('specific topics', formData.specificTopics);
+    }
+    
+    if (formData.category === 'languages') {
+      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
+      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
+    }
+    
+    if (formData.category === 'skills') {
+      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
+      newErrors.ageGroup = validateField('age group', formData.ageGroup);
+    }
+    
+    if (formData.category === 'music') {
+      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
+      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
+    }
+    
+    if (formData.category === 'sports') {
+      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
+      newErrors.ageGroup = validateField('age group', formData.ageGroup);
+    }
+    
+    if (formData.category === 'technology') {
+      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
+      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
+    }
+    
+    if (formData.category === 'business') {
+      newErrors.skillLevel = validateField('experience level', formData.skillLevel);
+      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
+    }
+    
+    setErrors(newErrors);
+    return Object.values(newErrors).every(error => error === '');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Mark all fields as touched
+    const allFields = Object.keys(formData);
+    const touchedFields = allFields.reduce((acc, field) => ({ ...acc, [field]: true }), {});
+    setTouched(touchedFields);
+    
+    // Validate form
+    if (!validateForm()) {
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all required fields",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setLoading(true);
+    
+    try {
+      await onPostRequirement(formData);
+    } catch (error) {
+      console.error('Error submitting requirement:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInputChange = (field: string, value: string) => {
+    console.log(`Updating ${field} to:`, value);
+    
+    // Mark field as touched
+    setTouched(prev => ({ ...prev, [field]: true }));
+    
+    // Clear error for this field
+    setErrors(prev => ({ ...prev, [field]: '' }));
+    
+    setFormData(prev => ({ 
+      ...prev, 
+      [field]: value,
+      // Reset related fields when category changes
+      ...(field === 'category' && { 
+        subject: '',
+        classLevel: '',
+        board: '',
+        examPreparation: '',
+        skillLevel: '',
+        ageGroup: '',
+        specificTopics: '',
+        learningGoals: ''
+      })
+    }));
+  };
+
+  // Check if form is valid for submit button
+  const isFormValid = (): boolean => {
+    // Basic required fields
+    if (!formData.category || !formData.subject || !formData.location || !formData.description) {
+      return false;
+    }
+    
+    // Category-specific validations
+    if (formData.category === 'academic' && (!formData.classLevel || !formData.board)) {
+      return false;
+    }
+    
+    if (formData.category === 'test_preparation' && (!formData.examPreparation || !formData.specificTopics)) {
+      return false;
+    }
+    
+    if (formData.category === 'languages' && (!formData.skillLevel || !formData.learningGoals)) {
+      return false;
+    }
+    
+    if (formData.category === 'skills' && (!formData.skillLevel || !formData.ageGroup)) {
+      return false;
+    }
+    
+    if (formData.category === 'music' && (!formData.skillLevel || !formData.learningGoals)) {
+      return false;
+    }
+    
+    if (formData.category === 'sports' && (!formData.skillLevel || !formData.ageGroup)) {
+      return false;
+    }
+    
+    if (formData.category === 'technology' && (!formData.skillLevel || !formData.learningGoals)) {
+      return false;
+    }
+    
+    if (formData.category === 'business' && (!formData.skillLevel || !formData.learningGoals)) {
+      return false;
+    }
+    
+    return true;
+  };
+
+  // Helper function to show error message
+  const showError = (field: string): string | undefined => {
+    return touched[field] && errors[field] ? errors[field] : undefined;
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-2xl font-bold">Post New Requirement</DialogTitle>
+          <DialogDescription>
+            Tell tutors what you're looking for. Be specific to get better matches!
+          </DialogDescription>
+        </DialogHeader>
+        
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Category Selection */}
+          <div className="space-y-2">
+            <Label htmlFor="category" className="text-base font-medium">Category *</Label>
+            <Select 
+              value={formData.category} 
+              onValueChange={(value) => handleInputChange('category', value)}
+            >
+              <SelectTrigger className={showError('category') ? 'border-red-500' : ''}>
+                <SelectValue placeholder="Select a category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="academic">Academic Subjects</SelectItem>
+                <SelectItem value="languages">Languages</SelectItem>
+                <SelectItem value="skills">Skills & Hobbies</SelectItem>
+                <SelectItem value="test_preparation">Test Preparation</SelectItem>
+                <SelectItem value="music">Music & Arts</SelectItem>
+                <SelectItem value="sports">Sports & Fitness</SelectItem>
+                <SelectItem value="technology">Technology & Programming</SelectItem>
+                <SelectItem value="business">Business & Finance</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
+            {showError('category') && (
+              <p className="text-sm text-red-500 mt-1">{showError('category')}</p>
+            )}
+          </div>
+
+          {/* Subject Selection */}
+          <div className="space-y-2">
+            <Label htmlFor="subject" className="text-base font-medium">Subject/Skill *</Label>
+            <Select 
+              value={formData.subject} 
+              onValueChange={(value) => handleInputChange('subject', value)}
+              disabled={!formData.category}
+            >
+              <SelectTrigger className={showError('subject') ? 'border-red-500' : ''}>
+                <SelectValue placeholder={formData.category ? "Select a subject or skill" : "Please select a category first"} />
+              </SelectTrigger>
+              <SelectContent>
+                {formData.category === 'academic' && (
+                  <>
+                    <SelectItem value="mathematics">Mathematics</SelectItem>
+                    <SelectItem value="physics">Physics</SelectItem>
+                    <SelectItem value="chemistry">Chemistry</SelectItem>
+                    <SelectItem value="biology">Biology</SelectItem>
+                    <SelectItem value="computer_science">Computer Science</SelectItem>
+                    <SelectItem value="economics">Economics</SelectItem>
+                    <SelectItem value="accounting">Accounting</SelectItem>
+                    <SelectItem value="statistics">Statistics</SelectItem>
+                    <SelectItem value="engineering">Engineering</SelectItem>
+                    <SelectItem value="medical">Medical Sciences</SelectItem>
+                    <SelectItem value="law">Law</SelectItem>
+                    <SelectItem value="architecture">Architecture</SelectItem>
+                  </>
+                )}
+                {formData.category === 'languages' && (
+                  <>
+                    <SelectItem value="english">English</SelectItem>
+                    <SelectItem value="hindi">Hindi</SelectItem>
+                    <SelectItem value="spanish">Spanish</SelectItem>
+                    <SelectItem value="french">French</SelectItem>
+                    <SelectItem value="german">German</SelectItem>
+                    <SelectItem value="chinese">Chinese (Mandarin)</SelectItem>
+                    <SelectItem value="japanese">Japanese</SelectItem>
+                    <SelectItem value="arabic">Arabic</SelectItem>
+                    <SelectItem value="sanskrit">Sanskrit</SelectItem>
+                    <SelectItem value="marathi">Marathi</SelectItem>
+                    <SelectItem value="gujarati">Gujarati</SelectItem>
+                    <SelectItem value="tamil">Tamil</SelectItem>
+                    <SelectItem value="telugu">Telugu</SelectItem>
+                    <SelectItem value="kannada">Kannada</SelectItem>
+                    <SelectItem value="malayalam">Malayalam</SelectItem>
+                    <SelectItem value="punjabi">Punjabi</SelectItem>
+                    <SelectItem value="bengali">Bengali</SelectItem>
+                  </>
+                )}
+                {formData.category === 'skills' && (
+                  <>
+                    <SelectItem value="cooking">Cooking & Culinary Arts</SelectItem>
+                    <SelectItem value="painting">Painting & Drawing</SelectItem>
+                    <SelectItem value="photography">Photography</SelectItem>
+                    <SelectItem value="dance">Dance</SelectItem>
+                    <SelectItem value="yoga">Yoga & Meditation</SelectItem>
+                    <SelectItem value="gardening">Gardening</SelectItem>
+                    <SelectItem value="knitting">Knitting & Crochet</SelectItem>
+                    <SelectItem value="pottery">Pottery & Ceramics</SelectItem>
+                    <SelectItem value="calligraphy">Calligraphy</SelectItem>
+                    <SelectItem value="origami">Origami</SelectItem>
+                    <SelectItem value="chess">Chess</SelectItem>
+                    <SelectItem value="public_speaking">Public Speaking</SelectItem>
+                    <SelectItem value="creative_writing">Creative Writing</SelectItem>
+                    <SelectItem value="graphic_design">Graphic Design</SelectItem>
+                    <SelectItem value="video_editing">Video Editing</SelectItem>
+                    <SelectItem value="digital_art">Digital Art</SelectItem>
+                  </>
+                )}
+                {formData.category === 'test_preparation' && (
+                  <>
+                    <SelectItem value="jee_main">JEE Main</SelectItem>
+                    <SelectItem value="jee_advanced">JEE Advanced</SelectItem>
+                    <SelectItem value="neet">NEET</SelectItem>
+                    <SelectItem value="cat">CAT</SelectItem>
+                    <SelectItem value="gate">GATE</SelectItem>
+                    <SelectItem value="upsc">UPSC Civil Services</SelectItem>
+                    <SelectItem value="ssc">SSC CGL</SelectItem>
+                    <SelectItem value="banking">Banking Exams</SelectItem>
+                    <SelectItem value="gre">GRE</SelectItem>
+                    <SelectItem value="gmat">GMAT</SelectItem>
+                    <SelectItem value="toefl">TOEFL</SelectItem>
+                    <SelectItem value="ielts">IELTS</SelectItem>
+                    <SelectItem value="sat">SAT</SelectItem>
+                    <SelectItem value="act">ACT</SelectItem>
+                    <SelectItem value="clat">CLAT</SelectItem>
+                    <SelectItem value="ailet">AILET</SelectItem>
+                  </>
+                )}
+                {formData.category === 'music' && (
+                  <>
+                    <SelectItem value="piano">Piano</SelectItem>
+                    <SelectItem value="guitar">Guitar</SelectItem>
+                    <SelectItem value="violin">Violin</SelectItem>
+                    <SelectItem value="flute">Flute</SelectItem>
+                    <SelectItem value="tabla">Tabla</SelectItem>
+                    <SelectItem value="harmonium">Harmonium</SelectItem>
+                    <SelectItem value="sitar">Sitar</SelectItem>
+                    <SelectItem value="drums">Drums</SelectItem>
+                    <SelectItem value="vocals">Vocals</SelectItem>
+                    <SelectItem value="music_theory">Music Theory</SelectItem>
+                    <SelectItem value="composition">Music Composition</SelectItem>
+                    <SelectItem value="hindustani_classical">Hindustani Classical</SelectItem>
+                    <SelectItem value="carnatic_classical">Carnatic Classical</SelectItem>
+                    <SelectItem value="western_classical">Western Classical</SelectItem>
+                    <SelectItem value="jazz">Jazz</SelectItem>
+                    <SelectItem value="rock">Rock Music</SelectItem>
+                  </>
+                )}
+                {formData.category === 'sports' && (
+                  <>
+                    <SelectItem value="cricket">Cricket</SelectItem>
+                    <SelectItem value="football">Football</SelectItem>
+                    <SelectItem value="basketball">Basketball</SelectItem>
+                    <SelectItem value="tennis">Tennis</SelectItem>
+                    <SelectItem value="badminton">Badminton</SelectItem>
+                    <SelectItem value="table_tennis">Table Tennis</SelectItem>
+                    <SelectItem value="swimming">Swimming</SelectItem>
+                    <SelectItem value="yoga">Yoga</SelectItem>
+                    <SelectItem value="gym">Gym & Fitness</SelectItem>
+                    <SelectItem value="martial_arts">Martial Arts</SelectItem>
+                    <SelectItem value="boxing">Boxing</SelectItem>
+                    <SelectItem value="wrestling">Wrestling</SelectItem>
+                    <SelectItem value="archery">Archery</SelectItem>
+                    <SelectItem value="shooting">Shooting</SelectItem>
+                    <SelectItem value="golf">Golf</SelectItem>
+                    <SelectItem value="chess">Chess</SelectItem>
+                  </>
+                )}
+                {formData.category === 'technology' && (
+                  <>
+                    <SelectItem value="web_development">Web Development</SelectItem>
+                    <SelectItem value="mobile_app_development">Mobile App Development</SelectItem>
+                    <SelectItem value="python">Python Programming</SelectItem>
+                    <SelectItem value="java">Java Programming</SelectItem>
+                    <SelectItem value="javascript">JavaScript</SelectItem>
+                    <SelectItem value="c_plus_plus">C++ Programming</SelectItem>
+                    <SelectItem value="data_science">Data Science</SelectItem>
+                    <SelectItem value="machine_learning">Machine Learning</SelectItem>
+                    <SelectItem value="artificial_intelligence">Artificial Intelligence</SelectItem>
+                    <SelectItem value="cybersecurity">Cybersecurity</SelectItem>
+                    <SelectItem value="cloud_computing">Cloud Computing</SelectItem>
+                    <SelectItem value="blockchain">Blockchain</SelectItem>
+                    <SelectItem value="ui_ux_design">UI/UX Design</SelectItem>
+                    <SelectItem value="game_development">Game Development</SelectItem>
+                    <SelectItem value="devops">DevOps</SelectItem>
+                    <SelectItem value="database_management">Database Management</SelectItem>
+                  </>
+                )}
+                {formData.category === 'business' && (
+                  <>
+                    <SelectItem value="entrepreneurship">Entrepreneurship</SelectItem>
+                    <SelectItem value="business_strategy">Business Strategy</SelectItem>
+                    <SelectItem value="marketing">Marketing</SelectItem>
+                    <SelectItem value="finance">Finance</SelectItem>
+                    <SelectItem value="accounting">Accounting</SelectItem>
+                    <SelectItem value="human_resources">Human Resources</SelectItem>
+                    <SelectItem value="operations_management">Operations Management</SelectItem>
+                    <SelectItem value="project_management">Project Management</SelectItem>
+                    <SelectItem value="supply_chain">Supply Chain Management</SelectItem>
+                    <SelectItem value="digital_marketing">Digital Marketing</SelectItem>
+                    <SelectItem value="social_media_marketing">Social Media Marketing</SelectItem>
+                    <SelectItem value="seo">SEO</SelectItem>
+                    <SelectItem value="content_marketing">Content Marketing</SelectItem>
+                    <SelectItem value="sales">Sales</SelectItem>
+                    <SelectItem value="customer_service">Customer Service</SelectItem>
+                    <SelectItem value="business_analytics">Business Analytics</SelectItem>
+                  </>
+                )}
+                {formData.category === 'other' && (
+                  <>
+                    <SelectItem value="custom">Custom Requirement</SelectItem>
+                    <SelectItem value="multiple_subjects">Multiple Subjects</SelectItem>
+                    <SelectItem value="special_needs">Special Needs Education</SelectItem>
+                    <SelectItem value="adult_education">Adult Education</SelectItem>
+                    <SelectItem value="career_counseling">Career Counseling</SelectItem>
+                    <SelectItem value="life_skills">Life Skills</SelectItem>
+                    <SelectItem value="personality_development">Personality Development</SelectItem>
+                    <SelectItem value="interview_preparation">Interview Preparation</SelectItem>
+                    <SelectItem value="resume_writing">Resume Writing</SelectItem>
+                    <SelectItem value="time_management">Time Management</SelectItem>
+                    <SelectItem value="leadership">Leadership Skills</SelectItem>
+                    <SelectItem value="communication">Communication Skills</SelectItem>
+                  </>
+                )}
+                {!formData.category && (
+                  <SelectItem value="placeholder" disabled>Please select a category first</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {showError('subject') && (
+              <p className="text-sm text-red-500 mt-1">{showError('subject')}</p>
+            )}
+          </div>
+
+          {/* Location Input */}
+          <div className="space-y-2">
+            <Label htmlFor="location" className="text-base font-medium">Location *</Label>
+            <Select 
+              value={formData.location} 
+              onValueChange={(value) => handleInputChange('location', value)}
+            >
+              <SelectTrigger className={showError('location') ? 'border-red-500' : ''}>
+                <SelectValue placeholder="Select your city/locality" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="mumbai">Mumbai</SelectItem>
+                <SelectItem value="delhi">Delhi</SelectItem>
+                <SelectItem value="bangalore">Bangalore</SelectItem>
+                <SelectItem value="hyderabad">Hyderabad</SelectItem>
+                <SelectItem value="chennai">Chennai</SelectItem>
+                <SelectItem value="kolkata">Kolkata</SelectItem>
+                <SelectItem value="pune">Pune</SelectItem>
+                <SelectItem value="ahmedabad">Ahmedabad</SelectItem>
+                <SelectItem value="jaipur">Jaipur</SelectItem>
+                <SelectItem value="lucknow">Lucknow</SelectItem>
+                <SelectItem value="kanpur">Kanpur</SelectItem>
+                <SelectItem value="nagpur">Nagpur</SelectItem>
+                <SelectItem value="indore">Indore</SelectItem>
+                <SelectItem value="thane">Thane</SelectItem>
+                <SelectItem value="bhopal">Bhopal</SelectItem>
+                <SelectItem value="visakhapatnam">Visakhapatnam</SelectItem>
+                <SelectItem value="patna">Patna</SelectItem>
+                <SelectItem value="vadodara">Vadodara</SelectItem>
+                <SelectItem value="ghaziabad">Ghaziabad</SelectItem>
+                <SelectItem value="ludhiana">Ludhiana</SelectItem>
+                <SelectItem value="agra">Agra</SelectItem>
+                <SelectItem value="nashik">Nashik</SelectItem>
+                <SelectItem value="faridabad">Faridabad</SelectItem>
+                <SelectItem value="meerut">Meerut</SelectItem>
+                <SelectItem value="rajkot">Rajkot</SelectItem>
+                <SelectItem value="kalyan">Kalyan</SelectItem>
+                <SelectItem value="vasai">Vasai</SelectItem>
+                <SelectItem value="vashi">Vashi</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
+            {showError('location') && (
+              <p className="text-sm text-red-500 mt-1">{showError('location')}</p>
+            )}
+          </div>
+
+          {/* Dynamic Quick Questions Based on Category */}
+          {formData.category === 'academic' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="classLevel" className="text-base font-medium">Class Level *</Label>
+                <Select 
+                  value={formData.classLevel} 
+                  onValueChange={(value) => handleInputChange('classLevel', value)}
+                >
+                  <SelectTrigger className={showError('classLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select class level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="primary">Primary (1-5)</SelectItem>
+                    <SelectItem value="middle">Middle (6-8)</SelectItem>
+                    <SelectItem value="secondary">Secondary (9-10)</SelectItem>
+                    <SelectItem value="higher_secondary">Higher Secondary (11-12)</SelectItem>
+                    <SelectItem value="undergraduate">Undergraduate</SelectItem>
+                    <SelectItem value="postgraduate">Postgraduate</SelectItem>
+                    <SelectItem value="phd">PhD</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('classLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('classLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="board" className="text-base font-medium">Board/University *</Label>
+                <Select 
+                  value={formData.board} 
+                  onValueChange={(value) => handleInputChange('board', value)}
+                >
+                  <SelectTrigger className={showError('board') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select board/university" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cbse">CBSE</SelectItem>
+                    <SelectItem value="icse">ICSE</SelectItem>
+                    <SelectItem value="state_board">State Board</SelectItem>
+                    <SelectItem value="ib">International Baccalaureate</SelectItem>
+                    <SelectItem value="igcse">IGCSE</SelectItem>
+                    <SelectItem value="university">University Specific</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('board') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('board')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'test_preparation' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="examPreparation" className="text-base font-medium">Exam Preparation Level *</Label>
+                <Select 
+                  value={formData.examPreparation} 
+                  onValueChange={(value) => handleInputChange('examPreparation', value)}
+                >
+                  <SelectTrigger className={showError('examPreparation') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select preparation level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner</SelectItem>
+                    <SelectItem value="intermediate">Intermediate</SelectItem>
+                    <SelectItem value="advanced">Advanced</SelectItem>
+                    <SelectItem value="revision">Revision & Practice</SelectItem>
+                    <SelectItem value="mock_tests">Mock Tests</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('examPreparation') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('examPreparation')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="specificTopics" className="text-base font-medium">Specific Topics *</Label>
+                <Input
+                  placeholder="e.g., Calculus, Organic Chemistry, Mechanics"
+                  value={formData.specificTopics}
+                  onChange={(e) => handleInputChange('specificTopics', e.target.value)}
+                  className={showError('specificTopics') ? 'border-red-500' : ''}
+                />
+                {showError('specificTopics') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('specificTopics')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'languages' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Current Skill Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select skill level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner (No prior knowledge)</SelectItem>
+                    <SelectItem value="elementary">Elementary (Basic phrases)</SelectItem>
+                    <SelectItem value="intermediate">Intermediate (Conversational)</SelectItem>
+                    <SelectItem value="upper_intermediate">Upper Intermediate</SelectItem>
+                    <SelectItem value="advanced">Advanced (Fluent)</SelectItem>
+                    <SelectItem value="native">Native-like</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="learningGoals" className="text-base font-medium">Learning Goals *</Label>
+                <Select 
+                  value={formData.learningGoals} 
+                  onValueChange={(value) => handleInputChange('learningGoals', value)}
+                >
+                  <SelectTrigger className={showError('learningGoals') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select learning goals" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="conversation">Conversation & Speaking</SelectItem>
+                    <SelectItem value="grammar">Grammar & Writing</SelectItem>
+                    <SelectItem value="reading">Reading & Comprehension</SelectItem>
+                    <SelectItem value="business">Business Communication</SelectItem>
+                    <SelectItem value="travel">Travel & Tourism</SelectItem>
+                    <SelectItem value="academic">Academic Purposes</SelectItem>
+                    <SelectItem value="exam_preparation">Exam Preparation</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('learningGoals') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('learningGoals')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'skills' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Current Skill Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select skill level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner (No experience)</SelectItem>
+                    <SelectItem value="intermediate">Intermediate (Some experience)</SelectItem>
+                    <SelectItem value="advanced">Advanced (Experienced)</SelectItem>
+                    <SelectItem value="expert">Expert (Professional level)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="ageGroup" className="text-base font-medium">Age Group *</Label>
+                <Select 
+                  value={formData.ageGroup} 
+                  onValueChange={(value) => handleInputChange('ageGroup', value)}
+                >
+                  <SelectTrigger className={showError('ageGroup') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select age group" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="children">Children (5-12 years)</SelectItem>
+                    <SelectItem value="teens">Teens (13-17 years)</SelectItem>
+                    <SelectItem value="adults">Adults (18+ years)</SelectItem>
+                    <SelectItem value="seniors">Seniors (50+ years)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('ageGroup') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('ageGroup')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'music' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Current Skill Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select skill level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner (No musical background)</SelectItem>
+                    <SelectItem value="intermediate">Intermediate (Some training)</SelectItem>
+                    <SelectItem value="advanced">Advanced (Regular practice)</SelectItem>
+                    <SelectItem value="expert">Expert (Professional musician)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="learningGoals" className="text-base font-medium">Learning Goals *</Label>
+                <Select 
+                  value={formData.learningGoals} 
+                  onValueChange={(value) => handleInputChange('learningGoals', value)}
+                >
+                  <SelectTrigger className={showError('learningGoals') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select learning goals" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="basic_skills">Basic Skills & Techniques</SelectItem>
+                    <SelectItem value="performance">Performance & Stage</SelectItem>
+                    <SelectItem value="composition">Composition & Songwriting</SelectItem>
+                    <SelectItem value="theory">Music Theory</SelectItem>
+                    <SelectItem value="exams">Grade Exams</SelectItem>
+                    <SelectItem value="hobby">Hobby & Recreation</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('learningGoals') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('learningGoals')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'sports' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Current Skill Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select skill level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner (No experience)</SelectItem>
+                    <SelectItem value="intermediate">Intermediate (Some training)</SelectItem>
+                    <SelectItem value="advanced">Advanced (Regular practice)</SelectItem>
+                    <SelectItem value="competitive">Competitive Level</SelectItem>
+                    <SelectItem value="professional">Professional</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="ageGroup" className="text-base font-medium">Age Group *</Label>
+                <Select 
+                  value={formData.ageGroup} 
+                  onValueChange={(value) => handleInputChange('ageGroup', value)}
+                >
+                  <SelectTrigger className={showError('ageGroup') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select age group" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="children">Children (5-12 years)</SelectItem>
+                    <SelectItem value="teens">Teens (13-17 years)</SelectItem>
+                    <SelectItem value="adults">Adults (18+ years)</SelectItem>
+                    <SelectItem value="seniors">Seniors (50+ years)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('ageGroup') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('ageGroup')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'technology' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Current Skill Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select skill level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="beginner">Beginner (No coding experience)</SelectItem>
+                    <SelectItem value="intermediate">Intermediate (Basic programming)</SelectItem>
+                    <SelectItem value="advanced">Advanced (Regular coding)</SelectItem>
+                    <SelectItem value="expert">Expert (Professional developer)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="learningGoals" className="text-base font-medium">Learning Goals *</Label>
+                <Select 
+                  value={formData.learningGoals} 
+                  onValueChange={(value) => handleInputChange('learningGoals', value)}
+                >
+                  <SelectTrigger className={showError('learningGoals') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select learning goals" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fundamentals">Programming Fundamentals</SelectItem>
+                    <SelectItem value="web_development">Web Development</SelectItem>
+                    <SelectItem value="mobile_apps">Mobile App Development</SelectItem>
+                    <SelectItem value="data_science">Data Science & Analytics</SelectItem>
+                    <SelectItem value="ai_ml">AI & Machine Learning</SelectItem>
+                    <SelectItem value="cybersecurity">Cybersecurity</SelectItem>
+                    <SelectItem value="career_switch">Career Switch</SelectItem>
+                    <SelectItem value="hobby">Hobby & Personal Projects</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('learningGoals') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('learningGoals')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {formData.category === 'business' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="skillLevel" className="text-base font-medium">Experience Level *</Label>
+                <Select 
+                  value={formData.skillLevel} 
+                  onValueChange={(value) => handleInputChange('skillLevel', value)}
+                >
+                  <SelectTrigger className={showError('skillLevel') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select experience level" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="student">Student</SelectItem>
+                    <SelectItem value="entry_level">Entry Level Professional</SelectItem>
+                    <SelectItem value="mid_level">Mid-Level Professional</SelectItem>
+                    <SelectItem value="senior">Senior Professional</SelectItem>
+                    <SelectItem value="entrepreneur">Entrepreneur</SelectItem>
+                    <SelectItem value="career_changer">Career Changer</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('skillLevel') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('skillLevel')}</p>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="learningGoals" className="text-base font-medium">Learning Goals *</Label>
+                <Select 
+                  value={formData.learningGoals} 
+                  onValueChange={(value) => handleInputChange('learningGoals', value)}
+                >
+                  <SelectTrigger className={showError('learningGoals') ? 'border-red-500' : ''}>
+                    <SelectValue placeholder="Select learning goals" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="skill_development">Skill Development</SelectItem>
+                    <SelectItem value="career_advancement">Career Advancement</SelectItem>
+                    <SelectItem value="business_launch">Launching a Business</SelectItem>
+                    <SelectItem value="industry_knowledge">Industry Knowledge</SelectItem>
+                    <SelectItem value="networking">Networking & Connections</SelectItem>
+                    <SelectItem value="certification">Professional Certification</SelectItem>
+                  </SelectContent>
+                </Select>
+                {showError('learningGoals') && (
+                  <p className="text-sm text-red-500 mt-1">{showError('learningGoals')}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Description */}
+          <div className="space-y-2">
+            <Label htmlFor="description" className="text-base font-medium">Description *</Label>
+            <Textarea
+              id="description"
+              placeholder="Describe what you want to learn, your current level, and any specific topics you want to focus on..."
+              value={formData.description}
+              onChange={(e) => handleInputChange('description', e.target.value)}
+              className={`min-h-[100px] ${showError('description') ? 'border-red-500' : ''}`}
+              required
+            />
+            {showError('description') && (
+              <p className="text-sm text-red-500 mt-1">{showError('description')}</p>
+            )}
+          </div>
+
+          {/* Teaching Mode Preference */}
+          <div className="space-y-2">
+            <Label className="text-base font-medium">Preferred Teaching Mode</Label>
+            <RadioGroup 
+              value={formData.preferredTeachingMode} 
+              onValueChange={(value) => handleInputChange('preferredTeachingMode', value)}
+            >
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="online" id="online" />
+                  <Label htmlFor="online">Online</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="offline" id="offline" />
+                  <Label htmlFor="offline">Offline</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="both" id="both" />
+                  <Label htmlFor="both">Both</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="home_tuition" id="home_tuition" />
+                  <Label htmlFor="home_tuition">Home Tuition</Label>
+                </div>
+              </div>
+            </RadioGroup>
+          </div>
+
+          {/* Time Preference */}
+          <div className="space-y-2">
+            <Label className="text-base font-medium">Preferred Time</Label>
+            <RadioGroup 
+              value={formData.preferredTime} 
+              onValueChange={(value) => handleInputChange('preferredTime', value)}
+            >
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="morning" id="morning" />
+                  <Label htmlFor="morning">Morning (6 AM - 12 PM)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="afternoon" id="afternoon" />
+                  <Label htmlFor="afternoon">Afternoon (12 PM - 6 PM)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="evening" id="evening" />
+                  <Label htmlFor="evening">Evening (6 PM - 10 PM)</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="flexible" id="flexible" />
+                  <Label htmlFor="flexible">Flexible</Label>
+                </div>
+              </div>
+            </RadioGroup>
+          </div>
+
+          {/* Budget Range */}
+          <div className="space-y-2">
+            <Label className="text-base font-medium">Budget Range (per hour)</Label>
+            <RadioGroup 
+              value={formData.budgetRange} 
+              onValueChange={(value) => handleInputChange('budgetRange', value)}
+            >
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="500-1000" id="budget1" />
+                  <Label htmlFor="budget1">₹500 - ₹1,000</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="1000-2000" id="budget2" />
+                  <Label htmlFor="budget2">₹1,000 - ₹2,000</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="2000-3000" id="budget3" />
+                  <Label htmlFor="budget3">₹2,000 - ₹3,000</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="3000+" id="budget4" />
+                  <Label htmlFor="budget4">₹3,000+</Label>
+                </div>
+              </div>
+            </RadioGroup>
+          </div>
+
+          {/* Urgency */}
+          <div className="space-y-2">
+            <Label className="text-base font-medium">Urgency Level</Label>
+            <RadioGroup 
+              value={formData.urgency} 
+              onValueChange={(value) => handleInputChange('urgency', value)}
+            >
+              <div className="grid grid-cols-3 gap-4">
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="low" id="urgency1" />
+                  <Label htmlFor="urgency1">Low</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="normal" id="urgency2" />
+                  <Label htmlFor="urgency2">Normal</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="high" id="urgency3" />
+                  <Label htmlFor="urgency3">High</Label>
+                </div>
+              </div>
+            </RadioGroup>
+          </div>
+
+          {/* Additional Requirements */}
+          <div className="space-y-2">
+            <Label htmlFor="additionalRequirements" className="text-base font-medium">
+              Additional Requirements
+            </Label>
+            <Textarea
+              id="additionalRequirements"
+              placeholder="Any other preferences like tutor gender, age group, language, etc. (optional)"
+              value={formData.additionalRequirements}
+              onChange={(e) => handleInputChange('additionalRequirements', e.target.value)}
+              className="min-h-[80px]"
+            />
+          </div>
+
+          {/* Form Actions */}
+          <div className="flex gap-3 pt-4">
+            <Button 
+              type="button" 
+              variant="outline" 
+              onClick={onClose}
+              className="flex-1"
+              disabled={loading}
+            >
+              Cancel
+            </Button>
+            <Button 
+              type="submit" 
+              className="flex-1 bg-gradient-primary"
+              disabled={loading || !isFormValid()}
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Posting...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Post Requirement
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

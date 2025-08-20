@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import VerificationStatus from "@/components/verification/VerificationStatus";
 
 import { getPendingTutorProfile, clearPendingTutorProfile } from "@/lib/profile-creation";
 import {
@@ -25,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Home as HomeIcon,
@@ -59,6 +60,8 @@ import {
   Award,
   Eye,
   Shield,
+  RefreshCw,
+  IndianRupee,
 } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
 import type { User } from "@supabase/supabase-js";
@@ -72,6 +75,9 @@ interface DashboardState {
   showStudentManagement: boolean;
   showMessaging: boolean;
   selectedStudent: any | null;
+  showRequirementResponse: boolean;
+  selectedRequirement: any | null;
+  requirementContext: any | null;
 }
 
 export default function TutorDashboard() {
@@ -84,12 +90,17 @@ export default function TutorDashboard() {
   const [students, setStudents] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0); // number of unread messages for this tutor
+  const [requirements, setRequirements] = useState<any[]>([]);
+  const [requirementsLoading, setRequirementsLoading] = useState(false);
   const [state, setState] = useState<DashboardState>({
     activeTab: "dashboard",
     showProfileDialog: false,
     showStudentManagement: false,
     showMessaging: false,
     selectedStudent: null,
+    showRequirementResponse: false,
+    selectedRequirement: null,
+    requirementContext: null,
   });
 
   // Debug state changes
@@ -648,6 +659,212 @@ export default function TutorDashboard() {
     }
   }, []);
 
+  // Load requirements that match this tutor's profile
+  const loadRequirements = useCallback(async () => {
+    try {
+      setRequirementsLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      console.log('🔍 [Main] Loading requirements for tutor:', user.id);
+      console.log('🔍 [Main] Tutor profile:', tutorProfile);
+      console.log('🔍 [Main] User profile:', userProfile);
+
+      // Get active requirements that match this tutor's subjects and location
+      const { data: requirementsData, error } = await supabase
+        .from('requirements')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("❌ [Main] Error loading requirements:", error);
+        setRequirements([]);
+      } else {
+        console.log('📋 [Main] Raw requirements data:', requirementsData);
+        console.log('📋 [Main] Total requirements found:', requirementsData?.length || 0);
+        
+        // Fetch student data for each requirement
+        let requirementsWithStudents = requirementsData || [];
+        if (requirementsData && requirementsData.length > 0) {
+          console.log('📋 [Main] First requirement structure:', requirementsData[0]);
+          
+          // Get unique student IDs from requirements
+          const studentIds = [...new Set(requirementsData.map(req => req.student_id).filter(Boolean))];
+          console.log('📋 [Main] Student IDs found:', studentIds);
+          
+          if (studentIds.length > 0) {
+            // Fetch student profiles
+            const { data: studentProfiles, error: studentError } = await supabase
+              .from('profiles')
+              .select('user_id, full_name, profile_photo_url, city, area')
+              .in('user_id', studentIds);
+            
+            if (!studentError && studentProfiles) {
+              console.log('📋 [Main] Student profiles fetched:', studentProfiles);
+              
+              // Create a map of student_id to student profile
+              const studentMap = studentProfiles.reduce((acc, student) => {
+                acc[student.user_id] = student;
+                return acc;
+              }, {} as Record<string, any>);
+              
+              // Merge student data with requirements
+              requirementsWithStudents = requirementsData.map(req => ({
+                ...req,
+                student: studentMap[req.student_id] || null
+              }));
+              
+              console.log('📋 [Main] Requirements with student data:', requirementsWithStudents[0]);
+            } else {
+              console.warn('⚠️ [Main] Could not fetch student profiles:', studentError);
+            }
+          }
+        }
+        
+        // Filter requirements based on tutor's profile - more flexible matching
+        const filteredRequirements = requirementsWithStudents?.filter(req => {
+          console.log('🔍 [Main] Checking requirement:', req.subject, 'against tutor subjects:', tutorProfile?.subjects);
+          
+          // Check if tutor teaches this subject - be more flexible
+          if (tutorProfile?.subjects && tutorProfile.subjects.length > 0) {
+            // Check if any subject matches (case-insensitive, partial match)
+            const subjectMatch = tutorProfile.subjects.some(tutorSubject => {
+              const tutorSub = tutorSubject?.toLowerCase() || '';
+              const reqSub = req.subject?.toLowerCase() || '';
+              return tutorSub.includes(reqSub) || reqSub.includes(tutorSub);
+            });
+            
+            if (!subjectMatch) {
+              console.log('❌ [Main] Subject mismatch:', req.subject, 'not in', tutorProfile.subjects);
+              return false;
+            }
+          }
+          
+          // Check location match - be more flexible
+          if (userProfile?.city && req.location) {
+            const tutorCity = userProfile.city?.toLowerCase() || '';
+            const reqLocation = req.location?.toLowerCase() || '';
+            
+            // Check if locations have any overlap
+            const locationMatch = tutorCity.includes(reqLocation) || 
+                                 reqLocation.includes(tutorCity) ||
+                                 (userProfile.area && userProfile.area.toLowerCase().includes(reqLocation));
+            
+            if (!locationMatch) {
+              console.log('❌ [Main] Location mismatch:', req.location, 'vs tutor location:', userProfile.city, userProfile.area);
+              return false;
+            }
+          }
+          
+          console.log('✅ [Main] Requirement matches:', req.subject);
+          return true;
+        }) || [];
+        
+        console.log('🎯 [Main] Filtered requirements:', filteredRequirements);
+        
+        // Check which requirements this tutor has already responded to
+        if (filteredRequirements && filteredRequirements.length > 0) {
+          const { data: responsesData, error: responsesError } = await supabase
+            .from('requirement_tutor_matches')
+            .select('requirement_id, status')
+            .eq('tutor_id', user.id)
+            .in('requirement_id', filteredRequirements.map(r => r.id));
+
+          if (!responsesError && responsesData) {
+            // Mark requirements that have responses
+            const requirementsWithResponses = filteredRequirements.map(req => ({
+              ...req,
+              hasResponded: responsesData.some(resp => resp.requirement_id === req.id)
+            }));
+            setRequirements(requirementsWithResponses);
+          } else {
+            setRequirements(filteredRequirements);
+          }
+        } else {
+          setRequirements([]);
+        }
+      }
+    } catch (error) {
+      console.error("❌ [Main] Error loading requirements:", error);
+      setRequirements([]);
+    } finally {
+      setRequirementsLoading(false);
+    }
+  }, [tutorProfile, userProfile]);
+
+  // Respond to a requirement (accept/reject)
+  const respondToRequirement = async (requirementId: string, status: 'interested' | 'not_interested', message?: string, proposedRate?: number) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Update or create the requirement_tutor_matches record
+      const { error: matchError } = await supabase
+        .from('requirement_tutor_matches')
+        .upsert({
+          requirement_id: requirementId,
+          tutor_id: user.id,
+          status: status,
+          response_message: message || null,
+          proposed_rate: proposedRate || null,
+          updated_at: new Date().toISOString()
+        });
+
+      if (matchError) {
+        console.error("Error updating requirement match:", matchError);
+        toast({
+          title: "Error",
+          description: "Failed to respond to requirement. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Send notification to student about tutor's response
+      const requirement = requirements.find(r => r.id === requirementId);
+      if (requirement) {
+        const { error: notificationError } = await supabase
+          .from('notifications')
+          .insert({
+            user_id: requirement.student_id,
+            type: 'requirement_response',
+            title: 'Tutor Response to Your Requirement',
+            message: `A tutor has ${status === 'interested' ? 'shown interest' : 'declined'} your ${requirement.subject} requirement.`,
+            data: {
+              requirement_id: requirementId,
+              tutor_id: user.id,
+              status: status,
+              message: message,
+              proposed_rate: proposedRate
+            },
+            is_read: false,
+            created_at: new Date().toISOString()
+          });
+
+        if (notificationError) {
+          console.error("Error sending notification to student:", notificationError);
+        }
+      }
+
+      // Refresh requirements list
+      await loadRequirements();
+
+      toast({
+        title: "Response Sent!",
+        description: `You have ${status === 'interested' ? 'shown interest' : 'declined'} this requirement.`,
+      });
+
+    } catch (error) {
+      console.error("Error responding to requirement:", error);
+      toast({
+        title: "Error",
+        description: "Failed to respond to requirement. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   // Load unread messages count for badge
   const loadUnreadMessagesCount = useCallback(async () => {
     try {
@@ -669,8 +886,9 @@ export default function TutorDashboard() {
     if (user) {
       loadNotifications();
       loadUnreadMessagesCount();
+      loadRequirements();
     }
-  }, [user, loadNotifications, loadUnreadMessagesCount]);
+  }, [user, loadNotifications, loadUnreadMessagesCount, loadRequirements]);
 
   // Set up real-time subscription for notifications (interest and message)
   useEffect(() => {
@@ -706,6 +924,39 @@ export default function TutorDashboard() {
       supabase.removeChannel(channel);
     };
   }, [user, toast, loadUnreadMessagesCount]);
+
+  // Set up real-time subscription for new requirements
+  useEffect(() => {
+    if (!user) return;
+
+    const requirementsChannel = supabase
+      .channel('tutor-requirements')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'requirements',
+          filter: 'status=eq.active'
+        },
+        (payload) => {
+          // Check if this requirement matches the tutor's profile
+          const newRequirement = payload.new;
+          if (tutorProfile?.subjects?.includes(newRequirement.subject)) {
+            loadRequirements(); // Refresh requirements list
+            toast({
+              title: 'New Requirement Available!',
+              description: `A student is looking for ${newRequirement.subject} tutoring.`,
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(requirementsChannel);
+    };
+  }, [user, tutorProfile, loadRequirements, toast]);
 
   // Subscribe to direct message table changes to keep unread count accurate
   useEffect(() => {
@@ -765,10 +1016,12 @@ export default function TutorDashboard() {
 
   const navMenu = [
     { label: "Dashboard", icon: <HomeIcon />, id: "dashboard" },
+    { label: "Requirements", icon: <BookOpen />, id: "requirements", badge: notifications.filter(n => n.type === 'new_requirement' && !n.is_read).length > 0 ? notifications.filter(n => n.type === 'new_requirement' && !n.is_read).length : undefined },
     { label: "Students", icon: <Users />, id: "students" },
     { label: "Schedule", icon: <Calendar />, id: "schedule" },
     { label: "Messages", icon: <MessageCircle />, id: "messages", badge: unreadCount > 0 ? unreadCount : undefined },
     { label: "Earnings", icon: <Wallet />, id: "earnings" },
+    { label: "Verification", icon: <Shield />, id: "verification" },
     { label: "Help", icon: <HelpCircle />, id: "help" },
   ];
 
@@ -838,10 +1091,18 @@ export default function TutorDashboard() {
                 selectedStudent={state.selectedStudent}
                 onBackToStudents={() => setState(prev => ({ ...prev, activeTab: "students" }))}
                 onOpenChatWithStudent={openChatWithStudent}
+                requirementContext={state.requirementContext}
               />
             )}
 
-
+            {state.activeTab === "requirements" && (
+              <RequirementsDashboard 
+                onRefresh={() => loadNotifications()}
+                tutorProfile={tutorProfile}
+                userProfile={userProfile}
+                setState={setState}
+              />
+            )}
 
             {state.activeTab === "schedule" && (
               <ScheduleDashboard tutorProfile={tutorProfile} />
@@ -853,6 +1114,18 @@ export default function TutorDashboard() {
 
             {state.activeTab === "help" && (
               <HelpSupport />
+            )}
+
+            {state.activeTab === "verification" && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold">Verification</h2>
+                </div>
+                <VerificationStatus 
+                  userType="tutor" 
+                  onStartVerification={() => navigate('/verification')} 
+                />
+              </div>
             )}
           </main>
         </div>
@@ -1214,10 +1487,24 @@ function DashboardHome({
             </div>
           </div>
         </div>
-        <Button onClick={onViewProfile}>
-          <Edit className="h-4 w-4 mr-2" />
-          Edit Profile
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={onViewProfile}>
+            <Edit className="h-4 w-4 mr-2" />
+            Edit Profile
+          </Button>
+          
+          {/* Verification Button */}
+          {!tutorProfile?.verified && (
+            <Button 
+              variant="default"
+              onClick={() => navigate('/verification')}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              <Shield className="h-4 w-4 mr-2" />
+              Get Verified
+            </Button>
+          )}
+        </div>
       </section>
 
       {/* Quick Stats */}
@@ -2549,10 +2836,39 @@ function MessagingDashboard({
   const { toast } = useToast();
   const [message, setMessage] = useState("");
   const [conversations, setConversations] = useState<any[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentConversationMessages, setCurrentConversationMessages] = useState<any[]>([]);
 
   useEffect(() => {
     // Load conversations from database
     loadConversations();
+    
+    // Listen for conversations updates
+    const handleConversationsUpdated = () => {
+      loadConversations();
+    };
+    
+    window.addEventListener('conversations-updated', handleConversationsUpdated);
+    
+    // Set up real-time subscription for new messages
+    const subscription = supabase
+      .channel('conversations-updates')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `or(sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId})`
+      }, (payload) => {
+        console.log('🔔 [Conversations] New message received:', payload);
+        // Refresh conversations when new messages arrive
+        loadConversations();
+      })
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('conversations-updated', handleConversationsUpdated);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const loadConversations = async () => {
@@ -2565,6 +2881,7 @@ function MessagingDashboard({
       }
 
       console.log('User ID:', user.id);
+      setCurrentUserId(user.id);
 
       // Get all messages where the current user is either sender or receiver
       const { data: messagesData, error: messagesError } = await supabase
@@ -2653,6 +2970,10 @@ function MessagingDashboard({
   const handleSendMessage = async () => {
     if (!message.trim() || !selectedStudent) return;
     
+    console.log('🔍 [handleSendMessage] selectedStudent:', selectedStudent);
+    console.log('🔍 [handleSendMessage] selectedStudent.id:', selectedStudent?.id);
+    console.log('🔍 [handleSendMessage] selectedStudent.user_id:', selectedStudent?.user_id);
+    
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -2664,22 +2985,41 @@ function MessagingDashboard({
         return;
       }
 
+      // Get the correct receiver ID - try different possible fields
+      const receiverId = selectedStudent.id || selectedStudent.user_id;
+      console.log('🔍 [handleSendMessage] Using receiver_id:', receiverId);
+      
+      if (!receiverId) {
+        console.error('❌ [handleSendMessage] selectedStudent structure:', selectedStudent);
+        throw new Error('No valid receiver ID found in selectedStudent. Check console for details.');
+      }
+
       // Insert the message into the database
-      const { error } = await supabase
+      const { data: newMessage, error } = await supabase
         .from('messages')
         .insert({
           sender_id: user.id,
-          receiver_id: selectedStudent.id,
+          receiver_id: receiverId,
           content: message.trim()
-        });
+        })
+        .select()
+        .single();
 
       if (error) throw error;
 
       // Clear the message input
       setMessage("");
       
-      // Reload conversations to show the new message
-      loadConversations();
+      // Add message to local state immediately for instant display
+      if (newMessage) {
+        // Add to current conversation messages for instant display
+        setCurrentConversationMessages(prev => [...prev, newMessage]);
+        
+        // Trigger real-time update for other components
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('conversations-updated'));
+        }
+      }
 
       // Create a notification for the student with tutor name (best-effort)
       try {
@@ -2690,7 +3030,7 @@ function MessagingDashboard({
           .single();
 
         await supabase.rpc('create_notification', {
-          p_user_id: selectedStudent.id,
+          p_user_id: receiverId,
           p_title: 'New Message',
           p_message: `You have a new message from ${senderProfile?.full_name || 'a tutor'}.`,
           p_type: 'message',
@@ -2739,7 +3079,7 @@ function MessagingDashboard({
                         src={conv.profile_photo_url || ""} 
                         alt={`${conv.student}'s profile photo`}
                       />
-                      <AvatarFallback>{conv.student.split(" ").map(n => n[0]).join("")}</AvatarFallback>
+                      <AvatarFallback>{conv.student ? conv.student.split(" ").map(n => n[0]).join("") : "U"}</AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
                       <div className="flex items-center justify-between">
@@ -2772,9 +3112,9 @@ function MessagingDashboard({
                         src={selectedStudent.profile_photo_url || ""} 
                         alt={`${selectedStudent.name}'s profile photo`}
                       />
-                      <AvatarFallback>{selectedStudent.name.split(" ").map(n => n[0]).join("")}</AvatarFallback>
+                      <AvatarFallback>{selectedStudent.name ? selectedStudent.name.split(" ").map(n => n[0]).join("") : "U"}</AvatarFallback>
                     </Avatar>
-                    <span>Chat with {selectedStudent.name}</span>
+                    <span>Chat with {selectedStudent.name || 'Student'}</span>
                   </div>
                 ) : (
                   "Select a conversation"
@@ -2785,7 +3125,14 @@ function MessagingDashboard({
               {selectedStudent ? (
                 <>
                   <div className="flex-1 overflow-y-auto space-y-4 mb-4" id="chat-messages">
-                    <ChatMessages selectedStudent={selectedStudent} />
+                    <ChatMessages 
+                      selectedStudent={selectedStudent} 
+                      onMessageSent={(message) => {
+                        // This will be called when a message is sent
+                        // The real-time subscription will handle adding it to display
+                      }}
+                      messages={currentConversationMessages}
+                    />
                   </div>
                   <div className="flex gap-2">
                     <Input
@@ -2841,28 +3188,45 @@ function ProfileManagement({
     university_name: tutorProfile?.university_name || "",
     year_of_passing: tutorProfile?.year_of_passing || "",
     percentage: tutorProfile?.percentage || "",
+    certificate: null, // File field for certificate
     teaching_experience: tutorProfile?.teaching_experience || "",
+    previous_experience: tutorProfile?.previous_experience || "",
     currently_teaching: tutorProfile?.currently_teaching ?? null,
     current_teaching_place: tutorProfile?.current_teaching_place || "",
     
     // Service Information
     class_type: tutorProfile?.class_type || "",
     max_travel_distance: tutorProfile?.max_travel_distance || 10,
+    class_size: tutorProfile?.class_size || [],
+    available_days: tutorProfile?.available_days || [],
+    time_slots: tutorProfile?.time_slots || {},
     individual_fee: tutorProfile?.individual_fee || "",
     group_fee: tutorProfile?.group_fee || "",
     home_tuition_fee: tutorProfile?.home_tuition_fee || "",
     demo_class: tutorProfile?.demo_class ?? null,
     demo_class_fee: tutorProfile?.demo_class_fee || "",
+    assignment_help: tutorProfile?.assignment_help ?? null,
+    test_preparation: tutorProfile?.test_preparation ?? null,
+    homework_support: tutorProfile?.homework_support ?? null,
+    weekend_classes: tutorProfile?.weekend_classes ?? null,
     
     // Profile & Verification
+    profile_photo: null, // File field for profile photo
     profile_headline: tutorProfile?.profile_headline || "",
     teaching_methodology: tutorProfile?.teaching_methodology || "",
     why_choose_me: tutorProfile?.why_choose_me || "",
+    languages: tutorProfile?.languages || [],
+    government_id: null, // File field for government ID
+    address_proof: null, // File field for address proof
+    educational_certificates: [], // Array of files
+    experience_certificates: [], // Array of files
+    video_introduction: null, // File field for video introduction
     
     // Subjects & Teaching
     subjects: tutorProfile?.subjects || [],
     student_levels: tutorProfile?.student_levels || [],
     curriculum: tutorProfile?.curriculum || [],
+    newSubject: "", // Temporary field for adding new subjects
     
     // Existing fields
     bio: tutorProfile?.bio || "",
@@ -2872,6 +3236,18 @@ function ProfileManagement({
     teaching_mode: tutorProfile?.teaching_mode || "",
     qualifications: tutorProfile?.qualifications || [],
     availability: tutorProfile?.availability || {},
+    
+    // Availability & Schedule
+    timezone: tutorProfile?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    weekly_schedule: tutorProfile?.weekly_schedule || {
+      monday: { available: false, slots: [] },
+      tuesday: { available: false, slots: [] },
+      wednesday: { available: false, slots: [] },
+      thursday: { available: false, slots: [] },
+      friday: { available: false, slots: [] },
+      saturday: { available: false, slots: [] },
+      sunday: { available: false, slots: [] }
+    },
   });
 
   // Debug form initialization
@@ -2937,6 +3313,12 @@ function ProfileManagement({
           </div>
         </CardContent>
       </Card>
+
+      {/* Verification Status */}
+      <VerificationStatus 
+        userType="tutor" 
+        onStartVerification={() => navigate('/verification')} 
+      />
 
       <Card>
         <CardHeader>
@@ -3741,23 +4123,53 @@ function ProfileEditDialog({
     university_name: tutorProfile?.university_name || "",
     year_of_passing: tutorProfile?.year_of_passing || "",
     percentage: tutorProfile?.percentage || "",
+    certificate: null, // File field for certificate
     teaching_experience: tutorProfile?.teaching_experience || "",
+    previous_experience: tutorProfile?.previous_experience || "",
     currently_teaching: tutorProfile?.currently_teaching ?? null,
     current_teaching_place: tutorProfile?.current_teaching_place || "",
     
     // Service Information
     class_type: tutorProfile?.class_type || "",
     max_travel_distance: tutorProfile?.max_travel_distance || 10,
+    class_size: (() => {
+      // Handle both legacy array format and new integer format
+      const value = tutorProfile?.class_size;
+      if (Array.isArray(value)) {
+        // Convert legacy array to integer
+        if (value.includes("Individual") && value.includes("Small Group (2-5)")) return 1;
+        if (value.includes("Individual")) return 2;
+        if (value.includes("Small Group (2-5)")) return 3;
+        if (value.includes("Large Group (6-10)")) return 4;
+        if (value.includes("Classroom (10+)")) return 5;
+        return 0;
+      }
+      // Return as integer or default to 0
+      return typeof value === 'number' ? value : 0;
+    })(),
+    available_days: tutorProfile?.available_days || [],
+    time_slots: tutorProfile?.time_slots || {},
     individual_fee: tutorProfile?.individual_fee || "",
     group_fee: tutorProfile?.group_fee || "",
     home_tuition_fee: tutorProfile?.home_tuition_fee || "",
     demo_class: tutorProfile?.demo_class ?? null,
     demo_class_fee: tutorProfile?.demo_class_fee || "",
+    assignment_help: tutorProfile?.assignment_help ?? null,
+    test_preparation: tutorProfile?.test_preparation ?? null,
+    homework_support: tutorProfile?.homework_support ?? null,
+    weekend_classes: tutorProfile?.weekend_classes ?? null,
     
     // Profile & Verification
+    profile_photo: null, // File field for profile photo
     profile_headline: tutorProfile?.profile_headline || "",
     teaching_methodology: tutorProfile?.teaching_methodology || "",
     why_choose_me: tutorProfile?.why_choose_me || "",
+    languages: tutorProfile?.languages || [],
+    government_id: null, // File field for government ID
+    address_proof: null, // File field for address proof
+    educational_certificates: [], // Array of files
+    experience_certificates: [], // Array of files
+    video_introduction: null, // File field for video introduction
     
     // Subjects & Teaching
     subjects: tutorProfile?.subjects || [],
@@ -3990,6 +4402,138 @@ function ProfileEditDialog({
     }
   };
 
+  // Helper function to clean and validate data
+  const cleanFormData = (data: any) => {
+    const cleaned: any = {};
+    
+    // Helper to safely convert to number
+    const safeNumber = (value: any, defaultValue: number = 0) => {
+      if (value === null || value === undefined || value === '') return defaultValue;
+      const num = parseInt(value);
+      return isNaN(num) ? defaultValue : num;
+    };
+    
+    // Helper to safely convert to float
+    const safeFloat = (value: any, defaultValue: number | null = null) => {
+      if (value === null || value === undefined || value === '') return defaultValue;
+      const num = parseFloat(value);
+      return isNaN(num) ? defaultValue : num;
+    };
+    
+    // Helper to ensure array fields are arrays
+    const safeArray = (value: any) => {
+      return Array.isArray(value) ? value : [];
+    };
+    
+    // Helper to ensure object fields are objects
+    const safeObject = (value: any) => {
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    };
+    
+    // Clean each field with proper type conversion
+    Object.keys(data).forEach(key => {
+      const value = data[key];
+      
+      // Skip undefined values to avoid sending them to the database
+      if (value === undefined) {
+        return;
+      }
+      
+      switch (key) {
+        case 'max_travel_distance':
+        case 'experience_years':
+        case 'hourly_rate_min':
+        case 'hourly_rate_max':
+          cleaned[key] = safeNumber(value);
+          break;
+          
+        case 'individual_fee':
+        case 'group_fee':
+        case 'home_tuition_fee':
+        case 'demo_class_fee':
+          cleaned[key] = safeFloat(value);
+          break;
+          
+        case 'available_days':
+        case 'subjects':
+        case 'student_levels':
+        case 'curriculum':
+        case 'languages':
+        case 'qualifications':
+          // These are JSONB fields, ensure they are proper arrays
+          if (Array.isArray(value)) {
+            cleaned[key] = value;
+          } else if (typeof value === 'string') {
+            // If it's a string, try to parse it as JSON
+            try {
+              const parsed = JSON.parse(value);
+              cleaned[key] = Array.isArray(parsed) ? parsed : [];
+            } catch {
+              cleaned[key] = [];
+            }
+          } else {
+            cleaned[key] = [];
+          }
+          break;
+          
+        case 'class_size':
+          // class_size is INT4 in database, so we need to convert array to a single integer
+          // If it's an array, take the first selected option or convert to a meaningful integer
+          if (Array.isArray(value) && value.length > 0) {
+            // Convert array selections to a single integer representation
+            // For example: ["Individual", "Small Group"] -> 1 (representing multiple options)
+            if (value.includes("Individual") && value.includes("Small Group")) {
+              cleaned[key] = 1; // Individual + Small Group
+            } else if (value.includes("Individual")) {
+              cleaned[key] = 2; // Individual only
+            } else if (value.includes("Small Group")) {
+              cleaned[key] = 3; // Small Group only
+            } else if (value.includes("Large Group")) {
+              cleaned[key] = 4; // Large Group only
+            } else if (value.includes("Classroom")) {
+              cleaned[key] = 5; // Classroom only
+            } else {
+              cleaned[key] = 0; // No selection
+            }
+          } else {
+            cleaned[key] = 0; // Default to 0 if no selection
+          }
+          break;
+          
+        case 'time_slots':
+        case 'availability':
+        case 'weekly_schedule':
+          cleaned[key] = safeObject(value);
+          break;
+          
+        case 'currently_teaching':
+        case 'demo_class':
+        case 'assignment_help':
+        case 'test_preparation':
+        case 'homework_support':
+        case 'weekend_classes':
+          cleaned[key] = value === true || value === false ? value : null;
+          break;
+          
+        case 'year_of_passing':
+          // Ensure year is a valid integer
+          cleaned[key] = safeNumber(value);
+          break;
+          
+        case 'percentage':
+          // Ensure percentage is a valid number
+          cleaned[key] = safeFloat(value);
+          break;
+          
+        default:
+          // For string fields, convert empty strings to null
+          cleaned[key] = (value === '' || value === undefined) ? null : value;
+      }
+    });
+    
+    return cleaned;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -4002,18 +4546,60 @@ function ProfileEditDialog({
       console.log('Current teaching place value:', formData.current_teaching_place);
       console.log('=== END FORM DEBUG ===');
       
+      // Clean and validate the form data before submission (for both paths)
+      const cleanedData = cleanFormData(formData);
+      
+      console.log('=== CLEANED DATA DEBUG ===');
+      console.log('Original form data:', formData);
+      console.log('Cleaned data:', cleanedData);
+      
+      // Additional debugging to identify problematic fields
+      console.log('=== FIELD TYPE ANALYSIS ===');
+      Object.keys(cleanedData).forEach(key => {
+        const value = cleanedData[key];
+        console.log(`${key}: type=${typeof value}, value=${JSON.stringify(value)}`);
+      });
+      
+      // Special debugging for known problematic fields
+      console.log('=== PROBLEMATIC FIELDS DEBUG ===');
+      console.log('class_size:', {
+        type: typeof cleanedData.class_size,
+        value: cleanedData.class_size,
+        isArray: Array.isArray(cleanedData.class_size)
+      });
+      console.log('available_days:', {
+        type: typeof cleanedData.available_days,
+        value: cleanedData.available_days,
+        isArray: Array.isArray(cleanedData.available_days)
+      });
+      console.log('student_levels:', {
+        type: typeof cleanedData.student_levels,
+        value: cleanedData.student_levels,
+        isArray: Array.isArray(cleanedData.student_levels)
+      });
+      console.log('curriculum:', {
+        type: typeof cleanedData.curriculum,
+        value: cleanedData.curriculum,
+        isArray: Array.isArray(cleanedData.curriculum)
+      });
+      console.log('=== END PROBLEMATIC FIELDS DEBUG ===');
+      
+      console.log('=== END FIELD TYPE ANALYSIS ===');
+      
+      console.log('=== END CLEANED DATA DEBUG ===');
+      
       // If there's a new photo, upload it first
       if (photoFile && userProfile?.id) {
         console.log('Starting photo upload process...');
         const photoUrl = await uploadPhotoToStorage(photoFile, userProfile.id);
         if (photoUrl) {
           console.log('Photo upload successful, updating profile with URL:', photoUrl);
-          // Update the profile with the new photo URL
+          // Update the profile with the new photo URL and cleaned data
           const updatedData = {
-            ...formData,
+            ...cleanedData,
             profile_photo_url: photoUrl
           };
-          console.log('Calling onUpdate with data:', updatedData);
+          console.log('Calling onUpdate with cleaned data + photo URL:', updatedData);
           await onUpdate(updatedData);
           console.log('Profile update completed successfully');
         } else {
@@ -4023,8 +4609,9 @@ function ProfileEditDialog({
         }
       } else {
         console.log('No new photo to upload, proceeding with profile update');
-        console.log('Calling onUpdate with data:', formData);
-        await onUpdate(formData);
+        
+        console.log('Calling onUpdate with cleaned data:', cleanedData);
+        await onUpdate(cleanedData);
         console.log('Profile update completed successfully');
       }
       
@@ -4117,15 +4704,41 @@ function ProfileEditDialog({
             <p className="text-xs text-blue-700">
               Complete your profile to increase your visibility and attract more students.
             </p>
-            <Button 
-              type="button" 
-              variant="outline" 
-              size="sm" 
-              onClick={testDatabaseSchema}
-              className="mt-2"
-            >
-              🔍 Test Database Schema
-            </Button>
+            <div className="flex gap-2 mt-2">
+              <Button 
+                type="button" 
+                variant="outline" 
+                size="sm" 
+                onClick={testDatabaseSchema}
+              >
+                🔍 Test Database Schema
+              </Button>
+              
+              {/* Verification Button */}
+              {!tutorProfile?.verified && (
+                <Button 
+                  type="button" 
+                  variant="default" 
+                  size="sm" 
+                  onClick={() => {
+                    onClose();
+                    navigate('/verification');
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  <Shield className="h-4 w-4 mr-2" />
+                  Get Verified
+                </Button>
+              )}
+              
+              {/* Verification Status Badge */}
+              {tutorProfile?.verified && (
+                <Badge variant="default" className="flex items-center gap-1">
+                  <CheckCircle className="h-3 w-3" />
+                  Verified
+                </Badge>
+              )}
+            </div>
           </div>
 
           {/* Profile Photo Upload */}
@@ -4205,7 +4818,6 @@ function ProfileEditDialog({
                   <option value="Mrs.">Mrs.</option>
                   <option value="Ms.">Ms.</option>
                   <option value="Dr.">Dr.</option>
-                  <option value="Prof.">Prof.</option>
                 </select>
               </div>
               <div>
@@ -4287,6 +4899,11 @@ function ProfileEditDialog({
                   <option value="">Select Language</option>
                   <option value="English">English</option>
                   <option value="Hindi">Hindi</option>
+                  <option value="Bengali">Bengali</option>
+                  <option value="Tamil">Tamil</option>
+                  <option value="Telugu">Telugu</option>
+                  <option value="Marathi">Marathi</option>
+                  <option value="Gujarati">Gujarati</option>
                   <option value="Other">Other</option>
                 </select>
               </div>
@@ -4306,9 +4923,10 @@ function ProfileEditDialog({
                   className="w-full p-2 border rounded-md"
                 >
                   <option value="">Select Qualification</option>
-                  <option value="High School">High School</option>
-                  <option value="Bachelor's Degree">Bachelor's Degree</option>
-                  <option value="Master's Degree">Master's Degree</option>
+                  <option value="10th">10th</option>
+                  <option value="12th">12th</option>
+                  <option value="Graduate">Graduate</option>
+                  <option value="Post-Graduate">Post-Graduate</option>
                   <option value="PhD">PhD</option>
                   <option value="Other">Other</option>
                 </select>
@@ -4344,6 +4962,33 @@ function ProfileEditDialog({
                 />
               </div>
               <div>
+                <Label htmlFor="certificate">Educational Certificate</Label>
+                <Input
+                  id="certificate"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setFormData(prev => ({ ...prev, certificate: file }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload your educational certificate (PDF, DOC, or image)
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="previous_experience">Previous Experience</Label>
+                <Textarea
+                  id="previous_experience"
+                  value={formData.previous_experience}
+                  onChange={(e) => setFormData(prev => ({ ...prev, previous_experience: e.target.value }))}
+                  placeholder="Describe your previous teaching experience"
+                  rows={3}
+                />
+              </div>
+              <div>
                 <Label htmlFor="teaching_experience">Teaching Experience</Label>
                 <select
                   id="teaching_experience"
@@ -4352,11 +4997,10 @@ function ProfileEditDialog({
                   className="w-full p-2 border rounded-md"
                 >
                   <option value="">Select Experience</option>
-                  <option value="0-1 years">0-1 years</option>
-                  <option value="1-3 years">1-3 years</option>
+                  <option value="Fresher">Fresher</option>
+                  <option value="1-2 years">1-2 years</option>
                   <option value="3-5 years">3-5 years</option>
-                  <option value="5-10 years">5-10 years</option>
-                  <option value="10+ years">10+ years</option>
+                  <option value="5+ years">5+ years</option>
                 </select>
               </div>
               <div>
@@ -4417,6 +5061,135 @@ function ProfileEditDialog({
                 />
               </div>
               <div>
+                <Label htmlFor="class_size">Class Size</Label>
+                <select
+                  id="class_size"
+                  value={(() => {
+                    // Convert integer back to display value for the select
+                    if (Array.isArray(formData.class_size)) {
+                      // Handle legacy array format - safely check if includes method exists
+                      try {
+                        if (formData.class_size.includes("Individual") && formData.class_size.includes("Small Group (2-5)")) return "1";
+                        if (formData.class_size.includes("Individual")) return "2";
+                        if (formData.class_size.includes("Small Group (2-5)")) return "3";
+                        if (formData.class_size.includes("Large Group (6-10)")) return "4";
+                        if (formData.class_size.includes("Classroom (10+)")) return "5";
+                      } catch (e) {
+                        console.warn('class_size is not a proper array:', formData.class_size);
+                      }
+                      return "0";
+                    }
+                    // Handle integer format
+                    return formData.class_size?.toString() || "0";
+                  })()}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value);
+                    setFormData(prev => ({ ...prev, class_size: value }));
+                  }}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="0">Select Class Size</option>
+                  <option value="1">Individual + Small Group</option>
+                  <option value="2">Individual Only</option>
+                  <option value="3">Small Group (2-5) Only</option>
+                  <option value="4">Large Group (6-10) Only</option>
+                  <option value="5">Classroom (10+) Only</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="available_days">Available Days</Label>
+                <div className="space-y-2">
+                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+                    <div key={day} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`available_days_${day}`}
+                        checked={formData.available_days.includes(day)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData(prev => ({
+                              ...prev,
+                              available_days: [...prev.available_days, day]
+                            }));
+                          } else {
+                            setFormData(prev => ({
+                              ...prev,
+                              available_days: prev.available_days.filter(d => d !== day)
+                            }));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`available_days_${day}`}>{day}</Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <Label htmlFor="time_slots">Time Slots</Label>
+                <div className="space-y-4">
+                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => (
+                    <div key={day} className="border rounded-lg p-4">
+                      <h4 className="font-medium mb-2">{day}</h4>
+                      <div className="space-y-2">
+                        {formData.time_slots[day]?.map((slot, index) => (
+                          <div key={index} className="flex items-center space-x-2">
+                            <Input
+                              type="time"
+                              value={slot.start}
+                              onChange={(e) => {
+                                const newTimeSlots = { ...formData.time_slots };
+                                if (!newTimeSlots[day]) newTimeSlots[day] = [];
+                                newTimeSlots[day][index] = { ...slot, start: e.target.value };
+                                setFormData(prev => ({ ...prev, time_slots: newTimeSlots }));
+                              }}
+                              className="w-32"
+                            />
+                            <span>to</span>
+                            <Input
+                              type="time"
+                              value={slot.end}
+                              onChange={(e) => {
+                                const newTimeSlots = { ...formData.time_slots };
+                                if (!newTimeSlots[day]) newTimeSlots[day] = [];
+                                newTimeSlots[day][index] = { ...slot, end: e.target.value };
+                                setFormData(prev => ({ ...prev, time_slots: newTimeSlots }));
+                              }}
+                              className="w-32"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const newTimeSlots = { ...formData.time_slots };
+                                if (newTimeSlots[day]) {
+                                  newTimeSlots[day] = newTimeSlots[day].filter((_, i) => i !== index);
+                                }
+                                setFormData(prev => ({ ...prev, time_slots: newTimeSlots }));
+                              }}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const newTimeSlots = { ...formData.time_slots };
+                            if (!newTimeSlots[day]) newTimeSlots[day] = [];
+                            newTimeSlots[day].push({ start: "09:00", end: "10:00" });
+                            setFormData(prev => ({ ...prev, time_slots: newTimeSlots }));
+                          }}
+                        >
+                          Add Time Slot
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
                 <Label htmlFor="individual_fee">Individual Class Fee (₹)</Label>
                 <Input
                   id="individual_fee"
@@ -4472,6 +5245,70 @@ function ProfileEditDialog({
                   placeholder="Enter demo class fee"
                 />
               </div>
+              <div>
+                <Label htmlFor="assignment_help">Assignment Help</Label>
+                <select
+                  id="assignment_help"
+                  value={formData.assignment_help === true ? "true" : formData.assignment_help === false ? "false" : ""}
+                  onChange={(e) => setFormData(prev => ({ 
+                    ...prev, 
+                    assignment_help: e.target.value === "true" ? true : e.target.value === "false" ? false : null 
+                  }))}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="">Select Option</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="test_preparation">Test Preparation</Label>
+                <select
+                  id="test_preparation"
+                  value={formData.test_preparation === true ? "true" : formData.test_preparation === false ? "false" : ""}
+                  onChange={(e) => setFormData(prev => ({ 
+                    ...prev, 
+                    test_preparation: e.target.value === "true" ? true : e.target.value === "false" ? false : null 
+                  }))}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="">Select Option</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="homework_support">Homework Support</Label>
+                <select
+                  id="homework_support"
+                  value={formData.homework_support === true ? "true" : formData.homework_support === false ? "false" : ""}
+                  onChange={(e) => setFormData(prev => ({ 
+                    ...prev, 
+                    homework_support: e.target.value === "true" ? true : e.target.value === "false" ? false : null 
+                  }))}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="">Select Option</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="weekend_classes">Weekend Classes</Label>
+                <select
+                  id="weekend_classes"
+                  value={formData.weekend_classes === true ? "true" : formData.weekend_classes === false ? "false" : ""}
+                  onChange={(e) => setFormData(prev => ({ 
+                    ...prev, 
+                    weekend_classes: e.target.value === "true" ? true : e.target.value === "false" ? false : null 
+                  }))}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="">Select Option</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -4507,6 +5344,204 @@ function ProfileEditDialog({
                   placeholder="Tell students why they should choose you as their tutor"
                   rows={3}
                 />
+              </div>
+              <div className="md:col-span-2">
+                <Label htmlFor="languages">Languages Spoken</Label>
+                <div className="space-y-2">
+                  {["English", "Hindi", "Bengali", "Tamil", "Telugu", "Marathi", "Gujarati", "Other"].map((language) => (
+                    <div key={language} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`languages_${language}`}
+                        checked={formData.languages.includes(language)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData(prev => ({
+                              ...prev,
+                              languages: [...prev.languages, language]
+                            }));
+                          } else {
+                            setFormData(prev => ({
+                              ...prev,
+                              languages: prev.languages.filter(l => l !== language)
+                            }));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`languages_${language}`}>{language}</Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="government_id">Government ID</Label>
+                <Input
+                  id="government_id"
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setFormData(prev => ({ ...prev, government_id: file }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload government ID for verification (Aadhar, PAN, etc.)
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="address_proof">Address Proof</Label>
+                <Input
+                  id="address_proof"
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setFormData(prev => ({ ...prev, address_proof: file }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload address proof (Utility bill, Bank statement, etc.)
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="educational_certificates">Educational Certificates</Label>
+                <Input
+                  id="educational_certificates"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    setFormData(prev => ({ ...prev, educational_certificates: files }));
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload multiple educational certificates
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="experience_certificates">Experience Certificates</Label>
+                <Input
+                  id="experience_certificates"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    setFormData(prev => ({ ...prev, experience_certificates: files }));
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload multiple experience certificates
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="video_introduction">Video Introduction</Label>
+                <Input
+                  id="video_introduction"
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setFormData(prev => ({ ...prev, video_introduction: file }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload a short video introducing yourself (optional)
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Subjects & Teaching Information */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold border-b pb-2">Subjects & Teaching Information</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2">
+                <Label htmlFor="subjects">Subjects Taught</Label>
+                <div className="space-y-2">
+                  {["Mathematics", "Physics", "Chemistry", "Biology", "English", "Hindi", "History", "Geography", "Economics", "Computer Science", "Programming"].map((subject) => (
+                    <div key={subject} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`subjects_${subject}`}
+                        checked={formData.subjects.includes(subject)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData(prev => ({
+                              ...prev,
+                              subjects: [...prev.subjects, subject]
+                            }));
+                          } else {
+                            setFormData(prev => ({
+                              ...prev,
+                              subjects: prev.subjects.filter(s => s !== subject)
+                            }));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`subjects_${subject}`}>{subject}</Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <Label htmlFor="student_levels">Student Levels</Label>
+                <div className="space-y-2">
+                  {["Primary", "Secondary", "Higher Secondary", "Graduate", "Professional"].map((level) => (
+                    <div key={level} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`student_levels_${level}`}
+                        checked={formData.student_levels.includes(level)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData(prev => ({
+                              ...prev,
+                              student_levels: [...prev.student_levels, level]
+                            }));
+                          } else {
+                            setFormData(prev => ({
+                              ...prev,
+                              student_levels: prev.student_levels.filter(l => l !== level)
+                            }));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`student_levels_${level}`}>{level}</Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <Label htmlFor="curriculum">Curriculum</Label>
+                <div className="space-y-2">
+                  {["CBSE", "ICSE", "State Board", "IB", "Cambridge", "NIOS"].map((curriculum) => (
+                    <div key={curriculum} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`curriculum_${curriculum}`}
+                        checked={formData.curriculum.includes(curriculum)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setFormData(prev => ({
+                              ...prev,
+                              curriculum: [...prev.curriculum, curriculum]
+                            }));
+                          } else {
+                            setFormData(prev => ({
+                              ...prev,
+                              curriculum: prev.curriculum.filter(c => c !== curriculum)
+                            }));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`curriculum_${curriculum}`}>{curriculum}</Label>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -4721,12 +5756,659 @@ function HelpSupport() {
   );
 }
 
+// Requirements Dashboard Component for Tutors
+function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState }: { onRefresh: () => void; tutorProfile: any; userProfile: any; setState: any }) {
+  const [requirements, setRequirements] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRequirement, setSelectedRequirement] = useState<any | null>(null);
+  const [showResponseDialog, setShowResponseDialog] = useState(false);
+  const [showRequirementDetails, setShowRequirementDetails] = useState(false);
+  const [responseMessage, setResponseMessage] = useState('');
+  const [proposedRate, setProposedRate] = useState<number | undefined>();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    loadRequirements();
+  }, []);
+
+  const loadRequirements = async () => {
+    try {
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      console.log('🔍 [RequirementsDashboard] Loading requirements for tutor:', user.id);
+
+      // First, let's test if the requirements table exists
+      try {
+        const { data: testData, error: testError } = await supabase
+          .from('requirements')
+          .select('id')
+          .limit(1);
+        
+        if (testError) {
+          console.error("❌ [RequirementsDashboard] Requirements table test failed:", testError);
+          if (testError.code === '42P01') {
+            console.error("❌ [RequirementsDashboard] Requirements table does not exist! Run the migration first.");
+          }
+        } else {
+          console.log("✅ [RequirementsDashboard] Requirements table exists and is accessible");
+        }
+      } catch (testErr) {
+        console.error("❌ [RequirementsDashboard] Error testing requirements table:", testErr);
+      }
+
+      // Get active requirements that match this tutor's profile
+      const { data: requirementsData, error } = await supabase
+        .from('requirements')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("❌ [RequirementsDashboard] Error loading requirements:", error);
+        setRequirements([]);
+      } else {
+        console.log('📋 [RequirementsDashboard] Raw requirements data:', requirementsData);
+        console.log('📋 [RequirementsDashboard] Total requirements found:', requirementsData?.length || 0);
+        
+        // Fetch student data for each requirement
+        let requirementsWithStudents = requirementsData || [];
+        if (requirementsData && requirementsData.length > 0) {
+          console.log('📋 [RequirementsDashboard] Sample requirement:', requirementsData[0]);
+          
+          // Get unique student IDs from requirements
+          const studentIds = [...new Set(requirementsData.map(req => req.student_id).filter(Boolean))];
+          console.log('📋 [RequirementsDashboard] Student IDs found:', studentIds);
+          
+          if (studentIds.length > 0) {
+            // Fetch student profiles
+            const { data: studentProfiles, error: studentError } = await supabase
+              .from('profiles')
+              .select('user_id, full_name, profile_photo_url, city, area')
+              .in('user_id', studentIds);
+            
+            if (!studentError && studentProfiles) {
+              console.log('📋 [RequirementsDashboard] Student profiles fetched:', studentProfiles);
+              
+              // Create a map of student_id to student profile
+              const studentMap = studentProfiles.reduce((acc, student) => {
+                acc[student.user_id] = student;
+                return acc;
+              }, {} as Record<string, any>);
+              
+              // Merge student data with requirements
+              requirementsWithStudents = requirementsData.map(req => ({
+                ...req,
+                student: studentMap[req.student_id] || null
+              }));
+              
+              console.log('📋 [RequirementsDashboard] Requirements with student data:', requirementsWithStudents[0]);
+            } else {
+              console.warn('⚠️ [RequirementsDashboard] Could not fetch student profiles:', studentError);
+            }
+          }
+        }
+        
+        // Check which requirements this tutor has already responded to
+        if (requirementsWithStudents && requirementsWithStudents.length > 0) {
+          const { data: responsesData, error: responsesError } = await supabase
+            .from('requirement_tutor_matches')
+            .select('requirement_id, status')
+            .eq('tutor_id', user.id)
+            .in('requirement_id', requirementsWithStudents.map(r => r.id));
+
+          if (!responsesError && responsesData) {
+            // Mark requirements that have responses
+            const requirementsWithResponses = requirementsWithStudents.map(req => ({
+              ...req,
+              hasResponded: responsesData.some(resp => resp.requirement_id === req.id)
+            }));
+            setRequirements(requirementsWithResponses);
+          } else {
+            setRequirements(requirementsWithStudents);
+          }
+        } else {
+          setRequirements([]);
+        }
+      }
+    } catch (error) {
+      console.error("❌ [RequirementsDashboard] Error loading requirements:", error);
+      setRequirements([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRespond = (requirement: any, status: 'interested' | 'not_interested') => {
+    setSelectedRequirement(requirement);
+    setShowResponseDialog(true);
+  };
+
+  const submitResponse = async () => {
+    if (!selectedRequirement) return;
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Update or create the requirement_tutor_matches record
+      const { error: matchError } = await supabase
+        .from('requirement_tutor_matches')
+        .upsert({
+          requirement_id: selectedRequirement.id,
+          tutor_id: user.id,
+          status: 'interested',
+          response_message: responseMessage || null,
+          proposed_rate: proposedRate || null,
+          updated_at: new Date().toISOString()
+        });
+
+      if (matchError) {
+        console.error("Error updating requirement match:", matchError);
+        toast({
+          title: "Error",
+          description: "Failed to respond to requirement. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Create a chat message to initiate communication
+      const { error: messageError } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: user.id,
+          receiver_id: selectedRequirement.student?.id || selectedRequirement.student_id,
+          message: responseMessage || `Hi! I'm interested in your ${selectedRequirement.subject} requirement. I'd love to help you with this.`,
+          message_type: 'requirement_response',
+          related_requirement_id: selectedRequirement.id,
+          created_at: new Date().toISOString()
+        });
+
+      if (messageError) {
+        console.error("Error creating chat message:", messageError);
+        toast({
+          title: "Error",
+          description: "Failed to send message. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Send notification to student about tutor's response
+      const { error: notificationError } = await supabase
+        .from('notifications')
+        .insert({
+          user_id: selectedRequirement.student?.id || selectedRequirement.student_id,
+          type: 'requirement_response',
+          title: 'Tutor Response to Your Requirement',
+          message: `A tutor has shown interest in your ${selectedRequirement.subject} requirement. Check your messages to continue the conversation.`,
+          data: {
+            requirement_id: selectedRequirement.id,
+            tutor_id: user.id,
+            status: 'interested',
+            message: responseMessage,
+            proposed_rate: proposedRate,
+            chat_initiated: true
+          },
+          is_read: false,
+          created_at: new Date().toISOString()
+        });
+
+      if (notificationError) {
+        console.error("Error sending notification to student:", notificationError);
+      }
+
+      // Update local state to show the requirement as responded to and store the initial message
+      setRequirements(prev => prev.map(req => 
+        req.id === selectedRequirement.id 
+          ? { 
+              ...req, 
+              hasResponded: true,
+              initialMessage: responseMessage || `Hi! I'm interested in your ${req.subject} requirement. I'd love to help you with this.`,
+              proposedRate: proposedRate,
+              student: req.student // Ensure student data is preserved
+            }
+          : req
+      ));
+
+      // Refresh requirements list
+      await loadRequirements();
+      onRefresh(); // Refresh parent component
+
+      toast({
+        title: "Response Sent!",
+        description: "Your message has been sent to the student. Check your Messages section to continue the conversation.",
+      });
+
+      // Close dialog
+      setShowResponseDialog(false);
+      setSelectedRequirement(null);
+      setResponseMessage('');
+      setProposedRate(undefined);
+
+    } catch (error) {
+      console.error("Error responding to requirement:", error);
+      toast({
+        title: "Error",
+        description: "Failed to respond to requirement. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="text-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+        <p className="text-muted-foreground">Loading requirements...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 w-full overflow-hidden">
+      <div className="flex items-center justify-between w-full">
+        <div className="flex-1 min-w-0">
+          <h2 className="text-2xl font-bold">Available Requirements</h2>
+          <p className="text-muted-foreground mt-1">
+            View and respond to student learning requirements that match your profile
+          </p>
+        </div>
+        <Button 
+          className="bg-gradient-primary flex-shrink-0"
+          onClick={() => loadRequirements()}
+        >
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Refresh
+        </Button>
+      </div>
+
+
+
+      {requirements.length > 0 ? (
+        <div className="flex flex-col gap-6 w-full overflow-hidden" style={{ maxWidth: '100vw', overflowX: 'hidden' }}>
+          {requirements.map((req, idx) => (
+            <Card 
+              key={idx} 
+              className="shadow-soft hover:shadow-lg transition-all duration-200 border-l-4 border-l-primary cursor-pointer hover:scale-105 w-full overflow-hidden"
+              style={{ maxWidth: '380px', overflowX: 'hidden' }}
+              onClick={() => {
+                setSelectedRequirement(req);
+                setShowRequirementDetails(true);
+              }}
+            >
+              <CardContent className="p-4 w-full overflow-hidden" style={{ maxWidth: '100%', overflowX: 'hidden' }}>
+                {/* Header with Subject and Urgency */}
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex-1 min-w-0 pr-2 overflow-hidden">
+                    <h3 className="font-semibold text-primary mb-1 text-base capitalize break-words overflow-hidden">{req.subject}</h3>
+                    <p className="text-sm text-muted-foreground capitalize overflow-hidden">{req.category}</p>
+                  </div>
+                  <Badge 
+                    variant={req.urgency === 'high' ? 'destructive' : req.urgency === 'normal' ? 'default' : 'secondary'}
+                    className="flex-shrink-0 text-xs px-2 py-1"
+                  >
+                    {req.urgency}
+                  </Badge>
+                </div>
+                
+                {/* Compact Description - Limited to 2 lines with Read More */}
+                <div className="mb-3">
+                  <p className="text-sm text-gray-700 leading-tight break-words" style={{
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden'
+                  }}>
+                    {req.description}
+                  </p>
+                  <button 
+                    className="text-primary text-xs hover:underline mt-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedRequirement(req);
+                      setShowRequirementDetails(true);
+                    }}
+                  >
+                    Read more...
+                  </button>
+                </div>
+                
+                {/* Key Details - Optimized for full width */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
+                    <MapPin className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
+                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
+                      <p className="text-xs font-medium text-gray-600">Location</p>
+                      <p className="text-sm text-muted-foreground break-words overflow-hidden">{req.location || 'Not specified'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
+                    <Clock className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
+                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
+                      <p className="text-xs font-medium text-gray-600">Preferred Time</p>
+                      <p className="text-sm text-muted-foreground break-words overflow-hidden">{req.preferred_time || 'Not specified'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
+                    <IndianRupee className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
+                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
+                      <p className="text-xs font-medium text-gray-600">Budget Range</p>
+                      <p className="text-sm text-muted-foreground break-words overflow-hidden">₹{req.budget_range || 'Not specified'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-2">
+                  {req.hasResponded ? (
+                    <div className="flex gap-2 w-full">
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        className="flex-1 text-sm h-9"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          console.log('🔍 [View Chat] Requirement data:', req);
+                          console.log('🔍 [View Chat] Student data:', req.student);
+                          
+                          // Transform student data to match the expected structure
+                          const transformedStudent = req.student ? {
+                            id: req.student.user_id, // Use user_id as id to match openChatWithStudent structure
+                            name: req.student.full_name || 'Student',
+                            profile_photo_url: req.student.profile_photo_url || ''
+                          } : null;
+                          
+                          console.log('🔍 [View Chat] Transformed student:', transformedStudent);
+                          
+                          console.log('🔍 [View Chat] Setting state with transformedStudent:', transformedStudent);
+                          setState(prev => ({ 
+                            ...prev, 
+                            activeTab: "messages",
+                            selectedStudent: transformedStudent,
+                            showMessaging: true,
+                            requirementContext: {
+                              requirementId: req.id,
+                              subject: req.subject,
+                              initialMessage: req.initialMessage || `Hi! I'm interested in your ${req.subject} requirement. I'd love to help you with this.`,
+                              proposedRate: req.proposedRate
+                            }
+                          }));
+                        }}
+                      >
+                        <MessageCircle className="h-4 w-4 mr-1" />
+                        View Chat
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        className="flex-1 text-sm h-9"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setState(prev => ({ ...prev, activeTab: "messages" }));
+                        }}
+                      >
+                        <CheckCircle className="h-4 w-4 mr-1" />
+                        Message Sent
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Button 
+                        size="sm" 
+                        className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm h-9"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRespond(req, 'interested');
+                        }}
+                      >
+                        <Check className="h-4 w-4 mr-1" />
+                        Show Interest
+                      </Button>
+                      
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        className="flex-1 text-sm h-9"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRespond(req, 'not_interested');
+                        }}
+                      >
+                        <X className="h-4 w-4 mr-1" />
+                        Decline
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">No Requirements Available</h3>
+            <p className="text-muted-foreground mb-4">
+              No student requirements currently match your profile. This could be because:
+            </p>
+            <ul className="text-sm text-muted-foreground space-y-1 text-left max-w-md mx-auto">
+              <li>• Your subjects don't match current requirements</li>
+              <li>• Your location doesn't match requirement locations</li>
+              <li>• No active requirements have been posted yet</li>
+            </ul>
+            <div className="mt-6">
+              <Button 
+                variant="outline" 
+                onClick={() => loadRequirements()}
+                className="mr-2"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Refresh
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => setState(prev => ({ ...prev, activeTab: "dashboard" }))}
+              >
+                <HomeIcon className="h-4 w-4 mr-2" />
+                Back to Dashboard
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Response Dialog */}
+      <Dialog open={showResponseDialog} onOpenChange={setShowResponseDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Respond to Requirement</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="message">Message to Student (Optional)</Label>
+              <Textarea
+                id="message"
+                placeholder="Introduce yourself and explain why you're a good fit..."
+                value={responseMessage}
+                onChange={(e) => setResponseMessage(e.target.value)}
+                rows={3}
+              />
+            </div>
+            <div>
+              <Label htmlFor="rate">Proposed Rate per Hour (Optional)</Label>
+              <Input
+                id="rate"
+                type="number"
+                placeholder="Enter your hourly rate"
+                value={proposedRate || ''}
+                onChange={(e) => setProposedRate(e.target.value ? parseFloat(e.target.value) : undefined)}
+                min="0"
+                step="0.01"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button 
+                className="flex-1" 
+                onClick={submitResponse}
+              >
+                Send Response
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={() => setShowResponseDialog(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Requirement Details Modal */}
+      <Dialog open={showRequirementDetails} onOpenChange={setShowRequirementDetails}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Requirement Details</DialogTitle>
+            <DialogDescription>
+              Complete information about this learning requirement
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedRequirement && (
+            <div className="space-y-6">
+              {/* Header */}
+              <div className="flex items-start justify-between p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <h3 className="text-2xl font-bold text-primary mb-2">{selectedRequirement.subject}</h3>
+                  <p className="text-lg text-muted-foreground capitalize">{selectedRequirement.category}</p>
+                </div>
+                <Badge 
+                  variant={selectedRequirement.urgency === 'high' ? 'destructive' : selectedRequirement.urgency === 'normal' ? 'default' : 'secondary'}
+                  className="text-lg px-3 py-1"
+                >
+                  {selectedRequirement.urgency} Priority
+                </Badge>
+              </div>
+
+              {/* Full Description */}
+              <div>
+                <h4 className="font-semibold text-lg mb-3">Description</h4>
+                <p className="text-gray-700 leading-relaxed text-base">{selectedRequirement.description}</p>
+              </div>
+
+              {/* Detailed Information Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <div className="flex items-start">
+                    <MapPin className="h-5 w-5 mr-3 text-primary flex-shrink-0 mt-1" />
+                    <div>
+                      <p className="font-medium text-base">Location</p>
+                      <p className="text-muted-foreground">{selectedRequirement.location || 'Not specified'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-start">
+                    <Clock className="h-5 w-5 mr-3 text-primary flex-shrink-0 mt-1" />
+                    <div>
+                      <p className="font-medium text-base">Preferred Time</p>
+                      <p className="text-muted-foreground">{selectedRequirement.preferred_time || 'Not specified'}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="flex items-start">
+                    <IndianRupee className="h-5 w-5 mr-3 text-primary flex-shrink-0 mt-1" />
+                    <div>
+                      <p className="font-medium text-base">Budget Range</p>
+                      <p className="text-muted-foreground">₹{selectedRequirement.budget_range || 'Not specified'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-start">
+                    <BookOpen className="h-5 w-5 mr-3 text-primary flex-shrink-0 mt-1" />
+                    <div>
+                      <p className="font-medium text-base">Teaching Mode</p>
+                      <p className="text-muted-foreground capitalize">{selectedRequirement.preferred_teaching_mode || 'Not specified'}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Additional Details */}
+              {selectedRequirement.additional_requirements && (
+                <div>
+                  <h4 className="font-semibold text-lg mb-3">Additional Requirements</h4>
+                  <p className="text-gray-700 leading-relaxed">{selectedRequirement.additional_requirements}</p>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-4 border-t">
+                <Button 
+                  size="default" 
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium"
+                  onClick={() => {
+                    setShowRequirementDetails(false);
+                    handleRespond(selectedRequirement, 'interested');
+                  }}
+                  disabled={selectedRequirement.hasResponded}
+                >
+                  {selectedRequirement.hasResponded ? (
+                    <>
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Already Responded
+                    </>
+                  ) : (
+                    <>
+                      <Check className="h-4 w-4 mr-1" />
+                      Show Interest
+                    </>
+                  )}
+                </Button>
+                
+                {!selectedRequirement.hasResponded && (
+                  <Button 
+                    size="default" 
+                    variant="outline"
+                    onClick={() => {
+                      setShowRequirementDetails(false);
+                      handleRespond(selectedRequirement, 'not_interested');
+                    }}
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Decline
+                  </Button>
+                )}
+                
+                <Button 
+                  variant="outline"
+                  onClick={() => setShowRequirementDetails(false)}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // ChatMessages Component for Tutor Dashboard
-function ChatMessages({ selectedStudent }: { selectedStudent: any }) {
+function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessages }: { selectedStudent: any; onMessageSent?: (message: any) => void; messages?: any[] }) {
   const [messages, setMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const { toast } = useToast();
+  const [subscription, setSubscription] = useState<any>(null);
 
   useEffect(() => {
     // Cache current user id for render-time checks
@@ -4737,10 +6419,79 @@ function ChatMessages({ selectedStudent }: { selectedStudent: any }) {
     loadCurrentUser();
     if (selectedStudent) {
       loadMessages();
-      // Mark messages as read
+      // Mark messages as read and clear notifications
       markMessagesAsRead();
+      // Set up real-time subscription for new messages
+      setupRealtimeSubscription();
     }
+
+    // Cleanup subscription on unmount or student change
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+        setSubscription(null);
+      }
+    };
   }, [selectedStudent]);
+
+  // Update messages when external messages change (for instant display)
+  useEffect(() => {
+    if (externalMessages && externalMessages.length > 0) {
+      setMessages(prev => {
+        // Merge external messages with existing ones, avoiding duplicates
+        const allMessages = [...prev];
+        externalMessages.forEach(externalMsg => {
+          if (!allMessages.some(msg => msg.id === externalMsg.id)) {
+            allMessages.push(externalMsg);
+          }
+        });
+        return allMessages.sort((a, b) => 
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      });
+    }
+  }, [externalMessages]);
+
+  // Set up real-time subscription for new messages
+  const setupRealtimeSubscription = () => {
+    if (!selectedStudent || !currentUserId) return;
+
+    // Cleanup existing subscription
+    if (subscription) {
+      subscription.unsubscribe();
+    }
+
+    const newSubscription = supabase
+      .channel(`messages:${currentUserId}:${selectedStudent.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `or(and(sender_id.eq.${currentUserId},receiver_id.eq.${selectedStudent.id}),and(sender_id.eq.${selectedStudent.id},receiver_id.eq.${currentUserId}))`
+      }, (payload) => {
+        console.log('🔔 [Realtime] New message received:', payload);
+        const newMessage = payload.new;
+        
+        // Add new message to the list
+        setMessages(prev => {
+          // Check if message already exists to avoid duplicates
+          if (prev.some(msg => msg.id === newMessage.id)) {
+            return prev;
+          }
+          return [...prev, newMessage].sort((a, b) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+        });
+
+        // Mark new message as read if it's from student
+        if (newMessage.sender_id === selectedStudent.id) {
+          markMessagesAsRead();
+        }
+      })
+      .subscribe();
+
+    setSubscription(newSubscription);
+  };
 
   const loadMessages = async () => {
     try {
@@ -4823,6 +6574,20 @@ function ChatMessages({ selectedStudent }: { selectedStudent: any }) {
           p_receiver_id: user.id 
         }
       );
+
+      // Clear notifications for this conversation
+      await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('user_id', user.id)
+        .eq('type', 'message')
+        .eq('data->sender_id', selectedStudent.id);
+
+      // Update conversations list to reflect read status
+      // This will trigger a refresh of the conversations list
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('conversations-updated'));
+      }
     } catch (error) {
       console.error("Error marking messages as read:", error);
     }

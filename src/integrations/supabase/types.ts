@@ -696,6 +696,354 @@ export type Database = {
           }
         ]
       }
+      verification_requests: {
+        Row: {
+          id: string
+          user_id: string
+          user_type: string
+          status: string
+          rejection_reason: string | null
+          verified_by: string | null
+          verified_at: string | null
+          created_at: string
+          updated_at: string
+          re_verification_due_date: string | null
+          last_verification_date: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          user_type: string
+          status?: string
+          rejection_reason?: string | null
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+          re_verification_due_date?: string | null
+          last_verification_date?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          user_type?: string
+          status?: string
+          rejection_reason?: string | null
+          verified_by?: string | null
+          verified_at?: string | null
+          created_at?: string
+          updated_at?: string
+          re_verification_due_date?: string | null
+          last_verification_date?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "verification_requests_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      verification_documents: {
+        Row: {
+          id: string
+          verification_request_id: string
+          document_type: string
+          document_name: string
+          file_url: string
+          file_size: number | null
+          mime_type: string | null
+          is_required: boolean
+          is_verified: boolean
+          verification_notes: string | null
+          uploaded_at: string
+          verified_at: string | null
+          verified_by: string | null
+        }
+        Insert: {
+          id?: string
+          verification_request_id: string
+          document_type: string
+          document_name: string
+          file_url: string
+          file_size?: number | null
+          mime_type?: string | null
+          is_required?: boolean
+          is_verified?: boolean
+          verification_notes?: string | null
+          uploaded_at?: string
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Update: {
+          id?: string
+          verification_request_id?: string
+          document_type?: string
+          document_name?: string
+          file_url?: string
+          file_size?: number | null
+          mime_type?: string | null
+          is_required?: boolean
+          is_verified?: boolean
+          verification_notes?: string | null
+          uploaded_at?: string
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "verification_documents_verification_request_id_fkey"
+            columns: ["verification_request_id"]
+            isOneToOne: false
+            referencedRelation: "verification_requests"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      verification_references: {
+        Row: {
+          id: string
+          verification_request_id: string
+          reference_name: string
+          reference_title: string | null
+          reference_organization: string | null
+          reference_email: string | null
+          reference_phone: string | null
+          reference_relationship: string | null
+          is_contactable: boolean
+          verification_status: string
+          verification_notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          verification_request_id: string
+          reference_name: string
+          reference_title?: string | null
+          reference_organization?: string | null
+          reference_email?: string | null
+          reference_phone?: string | null
+          reference_relationship?: string | null
+          is_contactable?: boolean
+          verification_status?: string
+          verification_notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          verification_request_id?: string
+          reference_name?: string
+          reference_title?: string | null
+          reference_organization?: string | null
+          reference_email?: string | null
+          reference_phone?: string | null
+          reference_relationship?: string | null
+          is_contactable?: boolean
+          verification_status?: string
+          verification_notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "verification_references_verification_request_id_fkey"
+            columns: ["verification_request_id"]
+            isOneToOne: false
+            referencedRelation: "verification_requests"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      subject_proficiency_tests: {
+        Row: {
+          id: string
+          subject: string
+          test_name: string
+          description: string | null
+          total_questions: number
+          passing_score: number
+          time_limit_minutes: number | null
+          is_active: boolean
+          created_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          subject: string
+          test_name: string
+          description?: string | null
+          total_questions: number
+          passing_score: number
+          time_limit_minutes?: number | null
+          is_active?: boolean
+          created_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          subject?: string
+          test_name?: string
+          description?: string | null
+          total_questions?: number
+          passing_score?: number
+          time_limit_minutes?: number | null
+          is_active?: boolean
+          created_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      test_questions: {
+        Row: {
+          id: string
+          test_id: string
+          question_text: string
+          question_type: string
+          options: Json | null
+          correct_answer: string
+          points: number
+          order_index: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          test_id: string
+          question_text: string
+          question_type: string
+          options?: Json | null
+          correct_answer: string
+          points?: number
+          order_index?: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          test_id?: string
+          question_text?: string
+          question_type?: string
+          options?: Json | null
+          correct_answer?: string
+          points?: number
+          order_index?: number
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_questions_test_id_fkey"
+            columns: ["test_id"]
+            isOneToOne: false
+            referencedRelation: "subject_proficiency_tests"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      test_attempts: {
+        Row: {
+          id: string
+          verification_request_id: string
+          test_id: string
+          user_id: string
+          score: number
+          total_questions: number
+          passing_score: number
+          passed: boolean
+          time_taken_minutes: number | null
+          started_at: string
+          completed_at: string | null
+          answers: Json | null
+          admin_review_notes: string | null
+          admin_reviewed_by: string | null
+          admin_reviewed_at: string | null
+        }
+        Insert: {
+          id?: string
+          verification_request_id: string
+          test_id: string
+          user_id: string
+          score: number
+          total_questions: number
+          passing_score: number
+          passed: boolean
+          time_taken_minutes?: number | null
+          started_at?: string
+          completed_at?: string | null
+          answers?: Json | null
+          admin_review_notes?: string | null
+          admin_reviewed_by?: string | null
+          admin_reviewed_at?: string | null
+        }
+        Update: {
+          id?: string
+          verification_request_id?: string
+          test_id?: string
+          user_id?: string
+          score?: number
+          total_questions?: number
+          passing_score?: number
+          passed?: boolean
+          time_taken_minutes?: number | null
+          started_at?: string
+          completed_at?: string | null
+          answers?: Json | null
+          admin_review_notes?: string | null
+          admin_reviewed_by?: string | null
+          admin_reviewed_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_attempts_verification_request_id_fkey"
+            columns: ["verification_request_id"]
+            isOneToOne: false
+            referencedRelation: "verification_requests"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      verification_workflow_logs: {
+        Row: {
+          id: string
+          verification_request_id: string
+          action: string
+          previous_status: string | null
+          new_status: string | null
+          action_by: string | null
+          action_notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          verification_request_id: string
+          action: string
+          previous_status?: string | null
+          new_status?: string | null
+          action_by?: string | null
+          action_notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          verification_request_id?: string
+          action?: string
+          previous_status?: string | null
+          new_status?: string | null
+          action_by?: string | null
+          action_notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "verification_workflow_logs_verification_request_id_fkey"
+            columns: ["verification_request_id"]
+            isOneToOne: false
+            referencedRelation: "verification_requests"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never
