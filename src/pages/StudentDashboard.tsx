@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { RequirementEditModal } from "@/components/RequirementEditModal";
 import { getPendingStudentProfile, clearPendingStudentProfile } from "@/lib/profile-creation";
 import {
   SidebarProvider,
@@ -31,7 +32,6 @@ import {
   List,
   Calendar,
   MessageCircle,
-  Wallet,
   User,
   HelpCircle,
   ChevronRight,
@@ -67,6 +67,8 @@ import {
   ClipboardList,
   Eye,
   Info,
+  Tag,
+  Trash2,
 } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -83,6 +85,9 @@ interface DashboardState {
   showTutorProfile: boolean;
   showRequirementModal: boolean;
   refreshRequirements: boolean;
+  showResponsesModal: boolean;
+  selectedRequirement: any;
+  requirementContext: any;
 }
 
 export default function StudentDashboard() {
@@ -95,6 +100,7 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0); // unread messages count
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [state, setState] = useState<DashboardState>({
     activeTab: "dashboard",
     showProfileDialog: false,
@@ -104,10 +110,25 @@ export default function StudentDashboard() {
     showTutorProfile: false,
     showRequirementModal: false,
     refreshRequirements: false,
+    requirementContext: null
   });
+
+  const handleStartChatFromRequirement = (tutor: any) => {
+    // Switch to messaging tab and set the selected tutor
+    setState(prev => ({
+      ...prev,
+      activeTab: 'messages',
+      selectedTutor: tutor,
+      showMessaging: true,
+      // Store requirement context for the messaging system
+      requirementContext: tutor.requirementContext || null
+    }));
+  };
 
   const openChatWithTutor = async (tutorUserId: string) => {
     try {
+      console.log('🔍 [DEBUG] openChatWithTutor called with tutor ID:', tutorUserId);
+      
       // Fetch tutor profile to populate chat header and state
       const { data: tutorData, error } = await supabase
         .from('tutor_profiles')
@@ -161,12 +182,18 @@ export default function StudentDashboard() {
   // Check authentication and load user data
   useEffect(() => {
     const checkAuth = async () => {
+      console.log('🔍 [StudentDashboard] Starting authentication check...');
       const { data: { user } } = await supabase.auth.getUser();
+      
       if (!user) {
+        console.log('🔍 [StudentDashboard] No user found, redirecting to login');
         navigate("/login");
         return;
       }
+      
+      console.log('🔍 [StudentDashboard] User authenticated:', user.id);
       setUser(user);
+      setCurrentUserId(user.id);
       await loadUserData(user.id);
     };
     checkAuth();
@@ -174,25 +201,44 @@ export default function StudentDashboard() {
 
   const loadUserData = async (userId: string) => {
     try {
-      // Load user profile
+      // Load user profile - STRICT role validation to prevent mixing
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('*')
         .eq('user_id', userId)
+        .eq('role', 'student') // STRICT: Only load student profiles
         .single();
 
       if (profileError) {
-        console.error('Error loading profile:', profileError);
+        console.error('❌ [StudentDashboard] Error loading profile:', profileError);
+        
+        if (profileError.code === 'PGRST116') {
+          // No profile found
+          toast({
+            title: "Profile Not Found",
+            description: "No student profile found. Please complete your student registration.",
+            variant: "destructive",
+          });
+          navigate("/signup-choice");
+          return;
+        }
+        
+        toast({
+          title: "Error",
+          description: "Failed to load profile. Please try again.",
+          variant: "destructive",
+        });
         return;
       }
 
       if (profileData?.role !== "student") {
+        console.error("❌ [StudentDashboard] Role mismatch! Expected 'student', got:", profileData.role);
         toast({
           title: "Access Denied",
-          description: "This dashboard is only for students.",
+          description: "This dashboard is only for students. Please log in with a student account.",
           variant: "destructive",
         });
-        navigate("/");
+        navigate("/login");
         return;
       }
 
@@ -221,6 +267,12 @@ export default function StudentDashboard() {
       await loadTutors();
       // Load message notifications
       await loadNotifications();
+      
+      // Set up real-time subscription for requirements changes
+      const cleanup = setupRequirementsSubscription();
+      
+      // Cleanup function will be called when component unmounts
+      return cleanup;
     } catch (error) {
       console.error('Error loading user data:', error);
       toast({
@@ -233,6 +285,57 @@ export default function StudentDashboard() {
     }
   };
 
+  // Set up real-time subscription for requirements changes
+  const setupRequirementsSubscription = () => {
+    if (!user) return;
+
+    const requirementsChannel = supabase
+      .channel('student-requirements-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to ALL events: INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'requirements',
+          filter: `student_id=eq.${user.id}` // Only listen to this student's requirements
+        },
+        (payload) => {
+          console.log('🔔 [StudentDashboard] Requirements change detected:', payload.event, payload);
+          
+          // Handle different types of changes
+          switch (payload.event) {
+            case 'INSERT':
+              // New requirement added
+              console.log('✅ [StudentDashboard] New requirement added');
+              break;
+              
+            case 'UPDATE':
+              // Requirement updated (status changed, deleted, etc.)
+              const updatedRequirement = payload.new;
+              console.log('🔄 [StudentDashboard] Requirement updated:', updatedRequirement.status);
+              
+              // If requirement is deleted or cancelled, notify tutors
+              if (updatedRequirement.status === 'deleted' || updatedRequirement.status === 'cancelled') {
+                console.log('🗑️ [StudentDashboard] Requirement marked as deleted/cancelled, notifying tutors');
+                // The real-time subscription in TutorDashboard will handle this automatically
+              }
+              break;
+              
+            case 'DELETE':
+              // Requirement deleted
+              console.log('🗑️ [StudentDashboard] Requirement deleted');
+              // The real-time subscription in TutorDashboard will handle this automatically
+              break;
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(requirementsChannel);
+    };
+  };
+
   // Load notifications of type 'message' for the student
   const loadNotifications = async () => {
     try {
@@ -240,18 +343,18 @@ export default function StudentDashboard() {
       if (user) {
         try {
           const { data: notificationsData, error: notificationsError } = await supabase
-            .from('notifications')
-            .select('*')
-            .eq('user_id', user.id)
-            .eq('type', 'message')
-            .order('created_at', { ascending: false })
-            .limit(5);
+          .from('notifications')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('type', 'message')
+          .order('created_at', { ascending: false })
+          .limit(5);
 
           if (notificationsError) {
             console.log('Notifications table error:', notificationsError.message);
             setNotifications([]);
           } else if (notificationsData) {
-            setNotifications(notificationsData);
+          setNotifications(notificationsData);
           }
         } catch (tableError) {
           console.log('Notifications table not available:', tableError);
@@ -272,17 +375,17 @@ export default function StudentDashboard() {
       
       // Check if messages table exists and has the expected structure
       try {
-        const { count, error } = await supabase
-          .from('messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('receiver_id', user.id)
-          .eq('read', false);
+      const { count, error } = await supabase
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('receiver_id', user.id)
+        .eq('read', false);
           
         if (error) {
           console.log('Messages table error:', error.message);
           setUnreadCount(0);
         } else {
-          setUnreadCount(count || 0);
+      setUnreadCount(count || 0);
         }
       } catch (tableError) {
         console.log('Messages table not available:', tableError);
@@ -327,6 +430,24 @@ export default function StudentDashboard() {
     };
   }, [user, toast]);
 
+  // Listen for unread count updates from child components
+  useEffect(() => {
+    const handleUnreadCountUpdate = (event: CustomEvent) => {
+      const { decrease, increase } = event.detail;
+      setUnreadCount(prev => {
+        if (decrease) return Math.max(0, prev - decrease);
+        if (increase) return prev + increase;
+        return prev;
+      });
+    };
+
+    window.addEventListener('unread-count-updated', handleUnreadCountUpdate as EventListener);
+    
+    return () => {
+      window.removeEventListener('unread-count-updated', handleUnreadCountUpdate as EventListener);
+    };
+  }, []);
+
   // Keep unread message count in sync with message table changes
   useEffect(() => {
     if (!user) return;
@@ -336,9 +457,12 @@ export default function StudentDashboard() {
       .channel('student-messages')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` },
-        () => {
-          loadUnreadMessagesCount();
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` },
+        (payload) => {
+          // Only increase unread count if the message is not from the current user
+          if (payload.new && payload.new.sender_id !== user.id) {
+            setUnreadCount(prev => prev + 1);
+          }
         }
       )
       .subscribe();
@@ -424,10 +548,10 @@ export default function StudentDashboard() {
             recommendedTutors = personalizedTutors;
           }
         }
-              } catch (searchHistoryError) {
-          console.log('Search history not available, using general recommendations');
-          console.log('Search history error:', searchHistoryError);
-        }
+      } catch (searchHistoryError) {
+        console.log('Search history not available, using general recommendations');
+        console.log('Search history error:', searchHistoryError);
+      }
 
       // If no personalized recommendations, fall back to general recommendations
       if (recommendedTutors.length === 0) {
@@ -477,11 +601,11 @@ export default function StudentDashboard() {
             }
           }
 
-          // Now try to get tutor profiles specifically - try multiple role variations
+          // Now try to get tutor profiles specifically - STRICT role filtering to prevent mixing
           const { data: profilesData, error: profilesError } = await supabase
             .from("profiles")
             .select("user_id, full_name, city, area, role, profile_photo_url, gender")
-            .or("role.eq.tutor,role.eq.teacher");
+            .eq("role", "tutor"); // STRICT: Only tutor role, no role mixing
 
           if (!profilesError && profilesData) {
             console.log('Found tutor profiles to enrich with:', profilesData.length);
@@ -529,7 +653,7 @@ export default function StudentDashboard() {
                 ...tutor,
                 profile: profilesMap.get(tutor.user_id) || null
               }));
-              
+            
               console.log('Enriched tutors (alternative):', enrichedTutors);
               setTutors(enrichedTutors);
             } else {
@@ -602,7 +726,7 @@ export default function StudentDashboard() {
         console.log('No tutors found to display');
         setTutors([]);
       }
-      
+    
       // Final fallback: if we still have no tutors, try to load any available tutors
       if (recommendedTutors.length === 0) {
         console.log('Trying final fallback to load any available tutors...');
@@ -661,10 +785,9 @@ export default function StudentDashboard() {
 
       // Step 1: Save the requirement to the database
       let requirement;
-      try {
-        const { data: savedRequirement, error: requirementError } = await supabase
-          .from('requirements')
-          .insert([{
+      
+      // Log the data being sent to the database
+      const requirementToSave = {
             student_id: user.id,
             category: requirementData.category,
             subject: requirementData.subject,
@@ -672,7 +795,7 @@ export default function StudentDashboard() {
             description: requirementData.description,
             preferred_teaching_mode: requirementData.preferredTeachingMode,
             preferred_time: requirementData.preferredTime,
-            budget_range: requirementData.budgetRange,
+        budget_range: requirementData.budgetRange || '1000-2000',
             urgency: requirementData.urgency,
             additional_requirements: requirementData.additionalRequirements,
             // Category-specific fields
@@ -685,7 +808,14 @@ export default function StudentDashboard() {
             learning_goals: requirementData.learningGoals || null,
             status: 'active',
             created_at: new Date().toISOString()
-          }])
+      };
+      
+      console.log('Saving requirement to database:', requirementToSave);
+      
+      try {
+        const { data: savedRequirement, error: requirementError } = await supabase
+          .from('requirements')
+          .insert([requirementToSave])
           .select()
           .single();
 
@@ -703,6 +833,7 @@ export default function StudentDashboard() {
         }
         
         requirement = savedRequirement;
+        console.log('Requirement saved successfully:', requirement);
       } catch (error) {
         console.error("Error saving requirement:", error);
         toast({
@@ -729,12 +860,43 @@ export default function StudentDashboard() {
 
       setState(prev => ({ ...prev, showRequirementModal: false }));
       
-      // Refresh requirements list if on requirements tab
-      if (state.activeTab === "requirements") {
-        // Trigger a refresh of the requirements list
-        // The RequirementsDashboard component will re-render and call loadRequirements
-        setState(prev => ({ ...prev, refreshRequirements: !prev.refreshRequirements }));
+      // Add a small delay to ensure database transaction is complete
+      setTimeout(async () => {
+        console.log('Refreshing requirements list after posting...');
+        
+              // Verify the requirement was saved by checking the database
+      try {
+        console.log('Verifying requirement with ID:', requirement.id);
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('requirements')
+          .select('*')
+          .eq('id', requirement.id)
+          .single();
+        
+        if (verifyError) {
+          console.error('Error verifying saved requirement:', verifyError);
+          console.error('Error details:', verifyError.message, verifyError.code);
+        } else {
+          console.log('Requirement verified in database:', verifyData);
+        }
+        
+        // Also try to query all requirements for the user to see if RLS is working
+        const { data: allRequirements, error: allError } = await supabase
+          .from('requirements')
+          .select('*')
+          .eq('student_id', user.id);
+        
+        if (allError) {
+          console.error('Error querying all requirements:', allError);
+        } else {
+          console.log('All requirements for user:', allRequirements);
+        }
+      } catch (verifyErr) {
+        console.error('Error during verification:', verifyErr);
       }
+        
+        setState(prev => ({ ...prev, refreshRequirements: !prev.refreshRequirements }));
+      }, 500);
 
     } catch (error) {
       console.error("Error posting requirement:", error);
@@ -895,20 +1057,20 @@ export default function StudentDashboard() {
         console.error("Error sending notifications:", notificationError);
       }
 
-      // Also create requirement_tutor_matches for tracking
-      const matches = tutors.map(tutor => ({
-        requirement_id: requirementId,
-        tutor_id: tutor.user_id,
-        status: 'pending',
-        created_at: new Date().toISOString()
-      }));
-
-      const { error: matchError } = await supabase
-        .from('requirement_tutor_matches')
-        .insert(matches);
-
-      if (matchError) {
-        console.error("Error creating tutor matches:", matchError);
+      // Create requirement_tutor_matches for tracking using the improved function
+      for (const tutor of tutors) {
+        const { error: matchError } = await supabase.rpc(
+          'handle_requirement_tutor_match',
+          {
+            p_requirement_id: requirementId,
+            p_tutor_id: tutor.user_id,
+            p_status: 'pending'
+          }
+        );
+        
+        if (matchError) {
+          console.error(`Error creating match for tutor ${tutor.user_id}:`, matchError);
+        }
       }
 
     } catch (error) {
@@ -1397,7 +1559,6 @@ export default function StudentDashboard() {
     { label: "My Requirements", icon: <List />, id: "requirements" },
     { label: "My Classes", icon: <Calendar />, id: "classes" },
     { label: "Messages", icon: <MessageCircle />, id: "messages", badge: unreadCount > 0 ? unreadCount : undefined },
-    { label: "Payments", icon: <Wallet />, id: "payments" },
     { label: "Help & Support", icon: <HelpCircle />, id: "help" },
   ];
 
@@ -1472,6 +1633,7 @@ export default function StudentDashboard() {
               <RequirementsDashboard 
                 onPostRequirement={() => setState(prev => ({ ...prev, showRequirementModal: true }))}
                 refreshTrigger={state.refreshRequirements}
+                onStartChat={handleStartChatFromRequirement}
               />
             )}
 
@@ -1480,6 +1642,7 @@ export default function StudentDashboard() {
                 selectedTutor={state.selectedTutor}
                 onBackToTutors={() => setState(prev => ({ ...prev, activeTab: "tutors" }))}
                 onOpenChatWithTutor={openChatWithTutor}
+                requirementContext={state.requirementContext}
               />
             )}
 
@@ -1487,9 +1650,7 @@ export default function StudentDashboard() {
               <ClassesDashboard />
             )}
 
-            {state.activeTab === "payments" && (
-              <PaymentsDashboard />
-            )}
+
 
             {state.activeTab === "help" && (
               <HelpSupport />
@@ -2756,16 +2917,16 @@ function TutorSearch({
                     <div className="mt-2 ml-4 space-y-1">
                       {subjects.map(subject => (
                         <label key={subject} className="flex items-center gap-2 text-sm">
-                                                  <input
-                          type="checkbox"
-                          checked={selectedSubject === subject}
+                          <input
+                            type="checkbox"
+                            checked={selectedSubject === subject}
                           onChange={() => {
                             const newSubject = selectedSubject === subject ? "all" : subject;
                             console.log('Subject filter changed:', { from: selectedSubject, to: newSubject });
                             setSelectedSubject(newSubject);
                           }}
-                          className="rounded border-border"
-                        />
+                            className="rounded border-border"
+                          />
                           {subject}
                         </label>
                       ))}
@@ -4578,20 +4739,28 @@ function TutorSearch({
 function MessagingDashboard({ 
   selectedTutor, 
   onBackToTutors,
-  onOpenChatWithTutor
+  onOpenChatWithTutor,
+  requirementContext
 }: {
   selectedTutor: TutorProfile | null;
   onBackToTutors: () => void;
   onOpenChatWithTutor: (tutorUserId: string) => void;
+  requirementContext?: any;
 }) {
   const { toast } = useToast();
-  const [message, setMessage] = useState("");
   const [conversations, setConversations] = useState<any[]>([]);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState<{id: string, name: string} | null>(null);
 
   useEffect(() => {
     // Load conversations from database
     loadConversations();
-  }, []);
+    
+    // If we have requirement context, ensure the initial message is visible
+    if (requirementContext && selectedTutor) {
+      handleRequirementContext(requirementContext);
+    }
+  }, [requirementContext, selectedTutor]);
 
   // Refresh conversations on message table changes for real-time updates
   useEffect(() => {
@@ -4615,10 +4784,66 @@ function MessagingDashboard({
     };
   }, []);
 
-  const loadConversations = async () => {
+  // Handle requirement context to ensure initial message is visible
+  const handleRequirementContext = async (context: any) => {
     try {
+      if (!context.tutorResponse || !selectedTutor) return;
+      
+      console.log('Handling requirement context:', context);
+      
+      // Check if the initial message already exists in the database
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
+      
+      const { data: existingMessage, error: checkError } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('sender_id', selectedTutor.user_id)
+        .eq('receiver_id', user.id)
+        .eq('content', context.tutorResponse.content)
+        .limit(1);
+      
+      if (checkError) {
+        console.error('Error checking existing message:', checkError);
+        return;
+      }
+      
+      // If message doesn't exist, create it
+      if (!existingMessage || existingMessage.length === 0) {
+        const { error: messageError } = await supabase
+          .from('messages')
+          .insert({
+            sender_id: selectedTutor.user_id,
+            receiver_id: user.id,
+            content: context.tutorResponse.content,
+            created_at: context.tutorResponse.created_at || new Date().toISOString()
+          });
+        
+        if (messageError) {
+          console.error('Error creating initial message:', messageError);
+        } else {
+          console.log('Initial message created from requirement context');
+          // Refresh conversations to show the new message
+          loadConversations();
+        }
+      } else {
+        console.log('Initial message already exists');
+      }
+    } catch (error) {
+      console.error('Error handling requirement context:', error);
+    }
+  };
+
+  const loadConversations = async () => {
+    try {
+      console.log('Loading conversations...');
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('No user found, returning early');
+        return;
+      }
+
+      console.log('User ID:', user.id);
 
       // Get all messages where the current user is either sender or receiver
       const { data: messagesData, error: messagesError } = await supabase
@@ -4634,25 +4859,45 @@ function MessagingDashboard({
         .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
         .order('created_at', { ascending: false });
 
-      if (messagesError) throw messagesError;
+      if (messagesError) {
+        console.error('Error fetching messages:', messagesError);
+        throw messagesError;
+      }
 
-      // Get unique conversation partners (tutors)
+      console.log('Messages data:', messagesData);
+
+      // Get unique conversation partners (tutors) - exclude the current user
       const tutorIds = new Set();
       messagesData?.forEach(msg => {
         const partnerId = msg.sender_id === user.id ? msg.receiver_id : msg.sender_id;
-        tutorIds.add(partnerId);
+        // Only add if it's not the current user
+        if (partnerId !== user.id) {
+          tutorIds.add(partnerId);
+        }
       });
 
-      // Get profile names for each conversation partner directly from profiles
-      const conversationsList = [] as any[];
+      console.log('Tutor IDs found:', Array.from(tutorIds));
+
+      // Get tutor profiles for each conversation partner
+      const conversationsList = [];
       for (const tutorId of tutorIds) {
-        const { data: profileData, error: profileError } = await supabase
+        // Get tutor profile
+        const { data: tutorData, error: tutorError } = await supabase
           .from('profiles')
-          .select('user_id, full_name, profile_photo_url')
-          .eq('user_id', tutorId as string)
+          .select(`
+            user_id,
+            full_name,
+            profile_photo_url,
+            role
+          `)
+          .eq('user_id', tutorId)
+          .eq('role', 'tutor') // STRICT: Only show actual tutors, no role mixing
           .single();
 
-        if (profileError) continue;
+        if (tutorError) {
+          console.warn('Error fetching tutor profile for ID:', tutorId, tutorError);
+          continue;
+        }
 
         // Get the last message in this conversation
         const lastMessage = messagesData?.find(msg => 
@@ -4669,78 +4914,88 @@ function MessagingDashboard({
 
         conversationsList.push({
           id: tutorId,
-          tutor: profileData?.full_name || "",
-          tutorPhotoUrl: profileData?.profile_photo_url || "",
+          tutor: tutorData?.full_name || "",
+          profile_photo_url: tutorData?.profile_photo_url || "",
           lastMessage: lastMessage?.content || "",
           time: lastMessage ? new Date(lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "",
           unread: unreadCount > 0
         });
       }
 
+      console.log('Conversations list:', conversationsList);
       setConversations(conversationsList);
     } catch (error) {
       console.error("Error loading conversations:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load conversations. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!message.trim() || !selectedTutor) return;
+  const handleDeleteConversation = async (tutorId: string, tutorName: string) => {
+    // Set conversation to delete and show confirmation dialog
+    setConversationToDelete({ id: tutorId, name: tutorName });
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDeleteConversation = async () => {
+    if (!conversationToDelete) return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      if (!user) return;
+
+      console.log(`🗑️ [StudentDashboard] Deleting conversation with tutor: ${conversationToDelete.id}`);
+
+      // Delete all messages between this student and tutor
+      const { error: deleteError } = await supabase
+        .from('messages')
+        .delete()
+        .or(`and(sender_id.eq.${user.id},receiver_id.eq.${conversationToDelete.id}),and(sender_id.eq.${conversationToDelete.id},receiver_id.eq.${user.id})`);
+
+      if (deleteError) {
+        console.error('Error deleting messages:', deleteError);
         toast({
           title: "Error",
-          description: "You must be logged in to send messages.",
+          description: "Failed to delete conversation. Please try again.",
           variant: "destructive",
         });
         return;
       }
 
-      // Insert the message into the database
-      const { error } = await supabase
-        .from('messages')
-        .insert({
-          sender_id: user.id,
-          receiver_id: selectedTutor.user_id,
-          content: message.trim()
-        });
-
-      if (error) throw error;
-
-      // Clear the message input
-      setMessage("");
+      console.log('✅ [StudentDashboard] Conversation deleted successfully');
       
-      // Reload conversations to show the new message
-      loadConversations();
-
-      // Create a notification for the tutor (best-effort; don't fail send on notification error)
-      try {
-        const { data: senderProfile } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('user_id', user.id)
-          .single();
-
-        await supabase.rpc('create_notification', {
-          p_user_id: selectedTutor.user_id,
-          p_title: 'New Message',
-          p_message: `You have a new message from ${senderProfile?.full_name || 'a student'}.`,
-          p_type: 'message',
-          p_data: { sender_id: user.id } as any
-        });
-      } catch (notifyErr) {
-        console.warn('Notification creation failed (message sent ok):', notifyErr);
+      // Remove conversation from local state
+      setConversations(prev => prev.filter(conv => conv.id !== conversationToDelete.id));
+      
+      // Clear selected tutor if it was the deleted one
+      if (selectedTutor && selectedTutor.user_id === conversationToDelete.id) {
+        onOpenChatWithTutor(''); // Clear selection
       }
-    } catch (error: any) {
-      console.error("Error sending message:", error);
+
+      toast({
+        title: "Conversation Deleted",
+        description: `Conversation with ${conversationToDelete.name} has been deleted.`,
+        variant: "default",
+      });
+
+      // Close confirmation dialog and reset state
+      setShowDeleteConfirm(false);
+      setConversationToDelete(null);
+
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
       toast({
         title: "Error",
-        description: error?.message || "Failed to send message. Please try again.",
+        description: "Failed to delete conversation. Please try again.",
         variant: "destructive",
       });
     }
   };
+
+
 
   return (
     <div className="space-y-6">
@@ -4764,24 +5019,45 @@ function MessagingDashboard({
                 conversations.map((conv) => (
                   <div 
                     key={conv.id} 
-                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted cursor-pointer"
-                    onClick={() => onOpenChatWithTutor(conv.id)}
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted group"
                   >
-                    <Avatar>
-                      <AvatarImage 
-                        src={conv.tutorPhotoUrl || ""} 
-                        alt={`${conv.tutor}'s profile photo`}
-                      />
-                      <AvatarFallback>{conv.tutor.split(" ").map(n => n[0]).join("")}</AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">{conv.tutor}</span>
-                        <span className="text-xs text-muted-foreground">{conv.time}</span>
+                    <div 
+                      className="flex items-center gap-3 flex-1 cursor-pointer"
+                      onClick={() => {
+                        console.log('🔍 [DEBUG] Conversation clicked:', conv);
+                        console.log('🔍 [DEBUG] Calling onOpenChatWithTutor with ID:', conv.id);
+                        onOpenChatWithTutor(conv.id);
+                      }}
+                    >
+                      <Avatar>
+                        <AvatarImage 
+                          src={conv.profile_photo_url || ""} 
+                          alt={`${conv.tutor}'s profile photo`}
+                        />
+                        <AvatarFallback>{conv.tutor.split(" ").map(n => n[0]).join("")}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{conv.tutor}</span>
+                          <span className="text-xs text-muted-foreground">{conv.time}</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground truncate">{conv.lastMessage}</p>
                       </div>
-                      <p className="text-sm text-muted-foreground truncate">{conv.lastMessage}</p>
+                      {conv.unread && <div className="w-2 h-2 bg-primary rounded-full"></div>}
                     </div>
-                    {conv.unread && <div className="w-2 h-2 bg-primary rounded-full"></div>}
+                    
+                    {/* Delete Conversation Button */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteConversation(conv.id, conv.tutor);
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
                   </div>
                 ))
               ) : (
@@ -4803,18 +5079,10 @@ function MessagingDashboard({
               {selectedTutor ? (
                 <>
                   <div className="flex-1 overflow-y-auto space-y-4 mb-4" id="chat-messages">
-                    <ChatMessages selectedTutor={selectedTutor} />
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Type your message..."
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
+                    <ChatMessages 
+                      selectedTutor={selectedTutor} 
+                      requirementContext={requirementContext}
                     />
-                    <Button onClick={handleSendMessage}>
-                      <Send className="h-4 w-4" />
-                    </Button>
                   </div>
                 </>
               ) : (
@@ -4826,6 +5094,41 @@ function MessagingDashboard({
           </Card>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Conversation</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p>
+              Are you sure you want to delete the conversation with{" "}
+              <span className="font-semibold">{conversationToDelete?.name}</span>?
+            </p>
+            <p className="text-sm text-muted-foreground">
+              This action cannot be undone. All messages in this conversation will be permanently deleted.
+            </p>
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setConversationToDelete(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmDeleteConversation}
+              >
+                Delete Conversation
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -5739,18 +6042,7 @@ function ClassesDashboard() {
   );
 }
 
-function PaymentsDashboard() {
-  return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Payments</h2>
-      <Card>
-        <CardContent className="p-6">
-          <p className="text-muted-foreground">No payment history available.</p>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
+
 
 function HelpSupport() {
   return (
@@ -5766,20 +6058,14 @@ function HelpSupport() {
 }
 
 // ChatMessages Component
-function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedTutor: TutorProfile; messages?: any[] }) {
+function ChatMessages({ selectedTutor, messages: externalMessages, requirementContext }: { selectedTutor: TutorProfile; messages?: any[]; requirementContext?: any }) {
   const [messages, setMessages] = useState<any[]>([]);
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<any>(null);
 
   useEffect(() => {
-    // Cache current user id for render-time checks
-    const loadCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setCurrentUserId(user?.id ?? null);
-    };
-    loadCurrentUser();
     if (selectedTutor) {
       loadMessages();
       // Mark messages as read and clear notifications
@@ -5796,6 +6082,13 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
       }
     };
   }, [selectedTutor]);
+
+  // Handle requirement context to ensure initial message is visible
+  useEffect(() => {
+    if (requirementContext && requirementContext.tutorResponse && selectedTutor) {
+      handleRequirementContextMessage();
+    }
+  }, [requirementContext, selectedTutor]);
 
   // Update messages when external messages change (for instant display)
   useEffect(() => {
@@ -5815,9 +6108,75 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
     }
   }, [externalMessages]);
 
+  // Handle requirement context message to ensure it's visible
+  const handleRequirementContextMessage = async () => {
+    try {
+      if (!requirementContext?.tutorResponse || !selectedTutor) return;
+      
+      // Get current user ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      console.log('Handling requirement context message in ChatMessages:', requirementContext);
+      
+      // Check if the initial message already exists
+      const { data: existingMessage, error: checkError } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('sender_id', selectedTutor.user_id)
+        .eq('receiver_id', user.id)
+        .eq('content', requirementContext.tutorResponse.content)
+        .limit(1);
+      
+      if (checkError) {
+        console.error('Error checking existing message:', checkError);
+        return;
+      }
+      
+      // If message doesn't exist, create it and add to local state
+      if (!existingMessage || existingMessage.length === 0) {
+        const newMessage = {
+          id: `temp-${Date.now()}`, // Temporary ID for immediate display
+          sender_id: selectedTutor.user_id,
+          receiver_id: user.id,
+          content: requirementContext.tutorResponse.content,
+          created_at: requirementContext.tutorResponse.created_at || new Date().toISOString(),
+          read: false
+        };
+        
+        // Add to local messages state immediately
+        setMessages(prev => [newMessage, ...prev]);
+        
+        // Also create in database
+        const { error: messageError } = await supabase
+          .from('messages')
+          .insert({
+            sender_id: selectedTutor.user_id,
+            receiver_id: user.id,
+            content: requirementContext.tutorResponse.content,
+            created_at: requirementContext.tutorResponse.created_at || new Date().toISOString()
+          });
+        
+        if (messageError) {
+          console.error('Error creating initial message:', messageError);
+        } else {
+          console.log('Initial message created and displayed from requirement context');
+        }
+      } else {
+        console.log('Initial message already exists in database');
+      }
+    } catch (error) {
+      console.error('Error handling requirement context message:', error);
+    }
+  };
+
   // Set up real-time subscription for new messages
-  const setupRealtimeSubscription = () => {
-    if (!selectedTutor || !currentUserId) return;
+  const setupRealtimeSubscription = async () => {
+    if (!selectedTutor) return;
+
+    // Get current user ID
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
 
     // Cleanup existing subscription
     if (subscription) {
@@ -5825,12 +6184,12 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
     }
 
     const newSubscription = supabase
-      .channel(`messages:${currentUserId}:${selectedTutor.user_id}`)
+      .channel(`messages:${user.id}:${selectedTutor.user_id}`)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'messages',
-        filter: `or(and(sender_id.eq.${currentUserId},receiver_id.eq.${selectedTutor.user_id}),and(sender_id.eq.${selectedTutor.user_id},receiver_id.eq.${currentUserId}))`
+        filter: `or(and(sender_id.eq.${user.id},receiver_id.eq.${selectedTutor.user_id}),and(sender_id.eq.${selectedTutor.user_id},receiver_id.eq.${user.id}))`
       }, (payload) => {
         console.log('🔔 [Realtime] New message received:', payload);
         const newMessage = payload.new;
@@ -5862,24 +6221,49 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Get messages between current user and selected tutor
-      const { data, error } = await supabase.rpc(
-        'get_conversation_messages',
-        { 
-          p_user1_id: user.id, 
-          p_user2_id: selectedTutor.user_id,
-          p_limit: 50
-        }
-      );
+      console.log('Student user ID:', user.id, 'Tutor ID:', selectedTutor.user_id);
 
-      if (error) throw error;
-      
-      // Sort messages by created_at in ascending order
-      const sortedMessages = data?.sort((a: any, b: any) => 
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      ) || [];
-      
-      setMessages(sortedMessages);
+      // Try to get messages using RPC function first
+      try {
+        const { data, error } = await supabase.rpc(
+          'get_messages_between_users_new',
+          user.id,
+          selectedTutor.user_id
+        );
+
+        if (error) {
+          console.warn('RPC function failed, trying direct table query:', error);
+          throw error;
+        }
+        
+        console.log('Messages loaded via RPC:', data);
+        
+        // Sort messages by created_at in ascending order
+        const sortedMessages = data?.sort((a: any, b: any) => 
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        ) || [];
+        
+        console.log('Sorted messages:', sortedMessages);
+        setMessages(sortedMessages);
+        return;
+      } catch (rpcError) {
+        console.log('Falling back to direct table query...');
+        
+        // Fallback: Query messages table directly
+        const { data: messagesData, error: tableError } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`and(sender_id.eq.${user.id},receiver_id.eq.${selectedTutor.user_id}),and(sender_id.eq.${selectedTutor.user_id},receiver_id.eq.${user.id})`)
+          .order('created_at', { ascending: true });
+
+        if (tableError) {
+          console.error('Direct table query also failed:', tableError);
+          throw tableError;
+        }
+
+        console.log('Messages loaded via direct query:', messagesData);
+        setMessages(messagesData || []);
+      }
     } catch (error) {
       console.error("Error loading messages:", error);
       toast({
@@ -5897,14 +6281,13 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Mark messages from tutor as read
-      await supabase.rpc(
-        'mark_messages_as_read',
-        { 
-          p_sender_id: selectedTutor.user_id, 
-          p_receiver_id: user.id 
-        }
-      );
+      // Mark messages from tutor as read using direct table update
+      await supabase
+        .from('messages')
+        .update({ read: true })
+        .eq('sender_id', selectedTutor.user_id)
+        .eq('receiver_id', user.id)
+        .eq('read', false);
 
       // Clear notifications for this conversation
       await supabase
@@ -5914,12 +6297,107 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
         .eq('type', 'message')
         .eq('data->sender_id', selectedTutor.user_id);
 
-      // Update conversations list to reflect read status
+      // Immediately update local unread count to 0 when messages are marked as read
+      const unreadFromThisTutor = messages.filter(msg => 
+        msg.sender_id === selectedTutor.user_id && !msg.read
+      ).length;
+      
+      // Update parent component's unread count
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('unread-count-updated', { 
+          detail: { decrease: unreadFromThisTutor } 
+        }));
+        window.dispatchEvent(new CustomEvent('conversations-updated'));
+      }
+
+      // Update local messages to mark them as read
+      setMessages(prev => prev.map(msg => 
+        msg.sender_id === selectedTutor.user_id ? { ...msg, read: true } : msg
+      ));
+      
+    } catch (error) {
+      console.error("Error marking messages as read:", error);
+    }
+  };
+
+  const handleSendMessage = async (messageContent: string) => {
+    if (!messageContent.trim() || !selectedTutor) return;
+    
+    try {
+      // Get current user ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      // Create optimistic message for instant display
+      const optimisticMessage = {
+        id: `temp-${Date.now()}`,
+        sender_id: user.id,
+        receiver_id: selectedTutor.user_id,
+        content: messageContent.trim(),
+        created_at: new Date().toISOString(),
+        read: false
+      };
+
+      // Add message to local state immediately for instant display
+      setMessages(prev => [...prev, optimisticMessage]);
+
+      // Insert the message into the database
+      const { data: newMessage, error } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: user.id,
+          receiver_id: selectedTutor.user_id,
+          content: messageContent.trim()
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Replace optimistic message with real message from database
+      if (newMessage) {
+        setMessages(prev => prev.map(msg => 
+          msg.id === optimisticMessage.id ? newMessage : msg
+        ));
+      }
+
+              // Create a notification for the tutor (best-effort; don't fail send on notification error)
+        try {
+          const { data: senderProfile } = await supabase
+            .from('profiles')
+            .select('full_name')
+            .eq('user_id', user.id)
+            .single();
+
+        // Create notification directly in notifications table
+        await supabase
+          .from('notifications')
+          .insert({
+            user_id: selectedTutor.user_id,
+            title: 'New Message',
+            message: `You have a new message from ${senderProfile?.full_name || 'a student'}.`,
+            type: 'message',
+            data: { sender_id: user.id }
+          });
+      } catch (notifyErr) {
+        console.warn('Notification creation failed (message sent ok):', notifyErr);
+      }
+
+      // Trigger conversations update in parent component
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('conversations-updated'));
       }
-    } catch (error) {
-      console.error("Error marking messages as read:", error);
+
+    } catch (error: any) {
+      console.error("Error sending message:", error);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to send message. Please try again.",
+        variant: "destructive",
+      });
+      
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(msg => msg.id !== `temp-${Date.now()}`));
     }
   };
 
@@ -5931,15 +6409,16 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
     <div className="space-y-4">
       {messages.length > 0 ? (
         messages.map((msg) => {
-          const isCurrentUser = msg.sender_id === currentUserId;
+          // Check if message is from the selected tutor (not from current user)
+          const isFromTutor = msg.sender_id === selectedTutor?.user_id;
           
           return (
             <div 
               key={msg.id} 
-              className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
+              className={`flex ${!isFromTutor ? 'justify-end' : 'justify-start'}`}
             >
               <div 
-                className={`max-w-[80%] rounded-lg p-3 ${isCurrentUser ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}
+                className={`max-w-[80%] rounded-lg p-3 ${!isFromTutor ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}
               >
                 <p>{msg.content}</p>
                 <p className="text-xs mt-1 opacity-70">
@@ -5954,48 +6433,163 @@ function ChatMessages({ selectedTutor, messages: externalMessages }: { selectedT
           No messages yet. Start the conversation!
         </div>
       )}
+      
+      {/* Message Input */}
+      <div className="flex gap-2 pt-4 border-t">
+        <Input
+          placeholder="Type your message..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyPress={(e) => {
+            if (e.key === "Enter" && message.trim()) {
+              handleSendMessage(message);
+              setMessage(""); // Clear input immediately
+            }
+          }}
+        />
+        <Button 
+          onClick={() => {
+            if (message.trim()) {
+              handleSendMessage(message);
+              setMessage(""); // Clear input immediately
+            }
+          }} 
+          disabled={!message.trim()}
+        >
+          <Send className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }
 
 // Requirements Dashboard Component
-function RequirementsDashboard({ onPostRequirement, refreshTrigger }: { onPostRequirement: () => void; refreshTrigger: boolean }) {
+function RequirementsDashboard({ onPostRequirement, refreshTrigger, onStartChat }: { 
+  onPostRequirement: () => void; 
+  refreshTrigger: boolean;
+  onStartChat?: (tutor: any) => void;
+}) {
+  const { toast } = useToast();
   const [requirements, setRequirements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showResponsesModal, setShowResponsesModal] = useState(false);
+  const [selectedRequirement, setSelectedRequirement] = useState<any>(null);
+  const [responses, setResponses] = useState<any[]>([]);
+  const [loadingResponses, setLoadingResponses] = useState(false);
+  const [showRequirementDetails, setShowRequirementDetails] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingRequirement, setEditingRequirement] = useState<any>(null);
+  const [showResponsePreview, setShowResponsePreview] = useState(false);
+  const [selectedResponse, setSelectedResponse] = useState<any>(null);
+  const [isOpeningConversation, setIsOpeningConversation] = useState(false);
 
   useEffect(() => {
+    console.log('RequirementsDashboard: refreshTrigger changed to:', refreshTrigger);
     loadRequirements();
   }, [refreshTrigger]);
 
   const loadRequirements = async () => {
     try {
+      console.log('RequirementsDashboard: Loading requirements...');
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        console.log('No user found, returning early');
+        return;
+      }
 
-      // Check if requirements table exists by trying to query it
+      console.log('Loading requirements for user:', user.id);
+
+      // First try a simple query to see if requirements exist at all
+      const { data: simpleRequirements, error: simpleError } = await supabase
+        .from('requirements')
+        .select('*')
+        .eq('student_id', user.id)
+        .neq('status', 'deleted')
+        .order('created_at', { ascending: false });
+        
+      // Also try query without any status filter to see all requirements
+      const { data: allRequirements, error: allError } = await supabase
+        .from('requirements')
+        .select('*')
+        .eq('student_id', user.id);
+        
+      console.log('🔍 [StudentDashboard] All requirements (no filter):', allRequirements);
+      console.log('🔍 [StudentDashboard] All requirements error:', allError);
+      console.log('🔍 [StudentDashboard] All requirements count:', allRequirements?.length || 0);
+
+      console.log('🔍 [StudentDashboard] Simple requirements query result:', simpleRequirements);
+      console.log('🔍 [StudentDashboard] Simple requirements query error:', simpleError);
+      console.log('🔍 [StudentDashboard] Simple requirements count:', simpleRequirements?.length || 0);
+
+      // Now try the complex query with joins - include tutor data for response preview
       const { data: requirements, error } = await supabase
         .from('requirements')
         .select(`
           *,
-          responses:requirement_tutor_matches(count)
+          responses:requirement_tutor_matches(
+            id,
+            status,
+            response_message,
+            created_at,
+            tutor_id
+          )
         `)
         .eq('student_id', user.id)
+        .neq('status', 'deleted')
         .order('created_at', { ascending: false });
 
+      console.log('🔍 [StudentDashboard] Complex requirements query result:', requirements);
+      console.log('🔍 [StudentDashboard] Complex requirements query error:', error);
+      console.log('🔍 [StudentDashboard] Complex requirements count:', requirements?.length || 0);
+
       if (error) {
-        console.error("Error loading requirements:", error);
-        // If table doesn't exist yet, show empty state
-        if (error.code === '42P01') { // Table doesn't exist
-          console.log("Requirements table not yet created. Run the migration first.");
-        }
-        setRequirements([]);
-      } else {
-        // Transform the data to include response count
-        const transformedRequirements = requirements?.map(req => ({
-          ...req,
-          responses: req.responses?.[0]?.count || 0
-        })) || [];
+        console.error("Error loading requirements with joins:", error);
+        console.log("Falling back to simple requirements without joins...");
         
+        // Fallback to simple query if complex query fails
+        if (simpleRequirements && !simpleError) {
+          console.log('🔍 [StudentDashboard] Using simple requirements as fallback:', simpleRequirements);
+          console.log('🔍 [StudentDashboard] Number of simple requirements:', simpleRequirements.length);
+          const transformedRequirements = simpleRequirements.map(req => ({
+            ...req,
+            responses: 0,
+            actualResponses: []
+          }));
+          setRequirements(transformedRequirements);
+        } else {
+          console.error("🔍 [StudentDashboard] Both simple and complex queries failed");
+          console.error("🔍 [StudentDashboard] Simple error:", simpleError);
+          console.error("🔍 [StudentDashboard] Complex error:", error);
+        if (error.code === '42P01') { // Table doesn't exist
+          console.log("🔍 [StudentDashboard] Requirements table not yet created. Run the migration first.");
+        }
+      setRequirements([]);
+        }
+      } else {
+        console.log('Requirements loaded from database with joins:', requirements);
+        console.log('Number of requirements with joins:', requirements?.length || 0);
+        // Transform the data to include response count and actual responses (excluding revoked)
+        const transformedRequirements = requirements?.map(req => {
+          const filteredResponses = req.responses?.filter((resp: any) => resp.status !== 'revoked') || [];
+          const responseCount = filteredResponses.length;
+          
+          console.log(`🔍 [StudentDashboard] Transforming requirement ${req.subject}:`, {
+            id: req.id,
+            status: req.status,
+            originalResponses: req.responses?.length || 0,
+            filteredResponses: responseCount,
+            responses: req.responses
+          });
+          
+          return {
+            ...req,
+            responses: responseCount,
+            actualResponses: filteredResponses
+          };
+        }) || [];
+        
+        console.log('🔍 [StudentDashboard] Transformed requirements:', transformedRequirements);
+        console.log('🔍 [StudentDashboard] Final requirements count:', transformedRequirements.length);
         setRequirements(transformedRequirements);
       }
       
@@ -6004,6 +6598,329 @@ function RequirementsDashboard({ onPostRequirement, refreshTrigger }: { onPostRe
       console.error("Error loading requirements:", error);
       setRequirements([]);
       setLoading(false);
+    }
+  };
+
+  const loadResponses = async (requirementId: string) => {
+    try {
+      setLoadingResponses(true);
+      
+      // Load all responses for this requirement
+      const { data: responsesData, error } = await supabase
+        .from('requirement_tutor_matches')
+        .select(`
+          *,
+          tutor:tutor_id(
+            user_id,
+            full_name,
+            profile_photo_url,
+            hourly_rate,
+            experience_years,
+            subjects,
+            profile:user_id(full_name, avatar_url)
+          )
+        `)
+        .eq('requirement_id', requirementId)
+        .neq('status', 'revoked') // Exclude revoked responses
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("Error loading responses:", error);
+        setResponses([]);
+      } else {
+        // Transform the data to include tutor information
+        const transformedResponses = responsesData?.map(response => ({
+          ...response,
+          tutor: {
+            ...response.tutor,
+            name: response.tutor?.full_name || response.tutor?.profile?.full_name || 'Tutor',
+            avatar: response.tutor?.profile_photo_url || response.tutor?.profile?.avatar_url || null
+          }
+        })) || [];
+        
+        setResponses(transformedResponses);
+      }
+    } catch (error) {
+      console.error("Error loading responses:", error);
+      setResponses([]);
+    } finally {
+      setLoadingResponses(false);
+    }
+  };
+
+  const handleViewResponses = async (requirement: any) => {
+    setSelectedRequirement(requirement);
+    setShowResponsesModal(true);
+    await loadResponses(requirement.id);
+  };
+
+  const closeResponsesModal = () => {
+    setShowResponsesModal(false);
+    setSelectedRequirement(null);
+    setResponses([]);
+  };
+
+  const handleResponsePreview = async (response: any, requirement: any) => {
+    // If tutor data is missing, try to load it
+    if (!response.tutor && response.tutor_id) {
+      console.log('Loading tutor data for response preview...', response.tutor_id);
+      try {
+        const { data: tutorData, error } = await supabase
+          .from('profiles')
+          .select('user_id, full_name, profile_photo_url')
+          .eq('user_id', response.tutor_id)
+          .single();
+        
+        if (!error && tutorData) {
+          response.tutor = {
+            user_id: tutorData.user_id,
+            full_name: tutorData.full_name,
+            name: tutorData.full_name,
+            profile_photo_url: tutorData.profile_photo_url,
+            avatar: tutorData.profile_photo_url
+          };
+          console.log('Loaded tutor data for preview:', response.tutor);
+        }
+      } catch (error) {
+        console.error('Error loading tutor data for preview:', error);
+      }
+    }
+    
+    setSelectedResponse(response);
+    setSelectedRequirement(requirement);
+    setShowResponsePreview(true);
+  };
+
+  const closeResponsePreview = () => {
+    setShowResponsePreview(false);
+    setSelectedResponse(null);
+    setSelectedRequirement(null);
+  };
+
+  const handleViewFullConversation = async (response: any) => {
+    try {
+      setIsOpeningConversation(true);
+      
+      // Debug: Log the response structure to understand the data
+      console.log('handleViewFullConversation - Full response object:', response);
+      console.log('handleViewFullConversation - Response tutor:', response.tutor);
+      console.log('handleViewFullConversation - Response tutor_id:', response.tutor_id);
+      
+      // Check if we have valid tutor data
+      if (!response.tutor && !response.tutor_id) {
+        console.error('No tutor data found in response:', response);
+        throw new Error('Tutor information is missing from the response');
+      }
+      
+      // Handle different possible tutor data structures
+      const tutorData = response.tutor || {};
+      const tutorId = response.tutor?.user_id || response.tutor?.id || response.tutor_id;
+      const tutorName = response.tutor?.full_name || response.tutor?.name || 'Tutor';
+      
+      if (!tutorId) {
+        console.error('No tutor ID found in response:', response);
+        throw new Error('Tutor ID is missing from the response');
+      }
+      
+      // Transform tutor data to match expected format for messaging system
+      const tutorForMessaging = {
+        id: tutorId,
+        user_id: tutorId,
+        full_name: tutorName,
+        profile_photo_url: tutorData.profile_photo_url || tutorData.avatar,
+        profile: {
+          full_name: tutorName,
+          profile_photo_url: tutorData.profile_photo_url || tutorData.avatar,
+          city: tutorData.city,
+          area: tutorData.area
+        },
+        subjects: tutorData.subjects,
+        hourly_rate: tutorData.hourly_rate,
+        // Add context about the requirement and ensure the initial message is loaded
+        requirementContext: {
+          requirementId: selectedRequirement?.id,
+          subject: selectedRequirement?.subject,
+          initialMessage: response.response_message,
+          // Add the actual response data to ensure it's immediately visible
+          tutorResponse: {
+            content: response.response_message,
+            created_at: response.created_at,
+            status: response.status
+          }
+        }
+      };
+      
+      console.log('handleViewFullConversation - Transformed tutor data:', tutorForMessaging);
+      
+      // Create initial message content from the tutor's response
+      const initialMessage = response.response_message || 
+        `Hi! I'm interested in your ${selectedRequirement?.subject} requirement. I'd love to help you with this.`;
+      
+      // Add the tutor's response as the first message in the conversation
+      if (response.response_message) {
+        // Create a message record for the tutor's response if it doesn't exist
+        await createInitialMessage(response, initialMessage);
+      }
+      
+      // Close the preview modal
+      closeResponsePreview();
+      
+      // Use a callback to notify parent component to switch to messaging tab
+      if (typeof onStartChat === 'function') {
+        onStartChat(tutorForMessaging);
+      }
+    } catch (error) {
+      console.error('Error opening conversation:', error);
+      // Show user-friendly error message
+      toast({
+        title: "Error",
+        description: "Unable to open conversation. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsOpeningConversation(false);
+    }
+  };
+
+  // Function to create the initial message from tutor's response
+  const createInitialMessage = async (response: any, messageContent: string) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Get tutor ID from response with fallback options
+      const tutorId = response.tutor?.user_id || response.tutor?.id || response.tutor_id;
+      
+      if (!tutorId) {
+        console.error('Cannot create initial message: no tutor ID found', response);
+        return;
+      }
+
+      console.log('createInitialMessage - Using tutor ID:', tutorId);
+
+      // Check if a message already exists for this requirement-tutor pair
+      const { data: existingMessage, error: checkError } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('sender_id', tutorId)
+        .eq('receiver_id', user.id)
+        .eq('content', messageContent)
+        .limit(1);
+
+      if (checkError) {
+        console.error('Error checking existing message:', checkError);
+        return;
+      }
+
+      // Only create message if it doesn't already exist
+      if (!existingMessage || existingMessage.length === 0) {
+        const { error: messageError } = await supabase
+          .from('messages')
+          .insert({
+            sender_id: tutorId,
+            receiver_id: user.id,
+            content: messageContent,
+            created_at: response.created_at || new Date().toISOString()
+          });
+
+        if (messageError) {
+          console.error('Error creating initial message:', messageError);
+        } else {
+          console.log('Initial message created from tutor response');
+        }
+      } else {
+        console.log('Initial message already exists, skipping creation');
+      }
+    } catch (error) {
+      console.error('Error in createInitialMessage:', error);
+    }
+  };
+
+  const handleViewRequirementDetails = (requirement: any) => {
+    setSelectedRequirement(requirement);
+    setShowRequirementDetails(true);
+  };
+
+  const closeRequirementDetails = () => {
+    setShowRequirementDetails(false);
+    setSelectedRequirement(null);
+  };
+
+  const handleEditRequirement = (requirement: any) => {
+    setEditingRequirement(requirement);
+    setShowEditModal(true);
+  };
+
+  const closeEditModal = () => {
+    setShowEditModal(false);
+    setEditingRequirement(null);
+  };
+
+  const handleDeleteRequirement = async (requirementId: string) => {
+    if (!confirm('Are you sure you want to delete this requirement?')) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('requirements')
+        .update({ status: 'deleted' })
+        .eq('id', requirementId);
+
+      if (error) {
+        console.error('Error deleting requirement:', error);
+        toast({
+          title: "Error",
+          description: "Failed to delete requirement. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Remove from local state
+      setRequirements(prev => prev.filter(req => req.id !== requirementId));
+      
+      toast({
+        title: "Success",
+        description: "Requirement deleted successfully.",
+      });
+    } catch (error) {
+      console.error('Error deleting requirement:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete requirement. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleStartChat = (tutor: any) => {
+    // Close the responses modal
+    closeResponsesModal();
+    
+    // Transform tutor data to match expected format for messaging system
+    const tutorForMessaging = {
+      id: tutor.user_id || tutor.id,
+      user_id: tutor.user_id || tutor.id,
+      full_name: tutor.full_name || tutor.name,
+      profile_photo_url: tutor.profile_photo_url,
+      profile: {
+        full_name: tutor.full_name || tutor.name,
+        profile_photo_url: tutor.profile_photo_url,
+        city: tutor.city,
+        area: tutor.area
+      },
+      subjects: tutor.subjects,
+      hourly_rate: tutor.hourly_rate
+    };
+    
+    // Use a callback to notify parent component to switch to messaging tab
+    if (typeof onStartChat === 'function') {
+      onStartChat(tutorForMessaging);
+    } else {
+      // Fallback: try to access parent component state directly
+      console.log('Starting chat with tutor:', tutorForMessaging);
+      // This could trigger a state update in the parent component
     }
   };
 
@@ -6037,18 +6954,115 @@ function RequirementsDashboard({ onPostRequirement, refreshTrigger }: { onPostRe
       {requirements.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {requirements.map((req, idx) => (
-            <Card key={idx} className="shadow-soft">
+            <Card key={idx} className="shadow-soft hover:shadow-lg transition-shadow cursor-pointer group">
               <CardContent className="p-4">
                 <div className="flex items-start justify-between mb-3">
-                  <h3 className="font-semibold">{req.subject}</h3>
-                  <Badge variant={req.status === 'active' ? 'default' : 'secondary'}>
-                    {req.status}
-                  </Badge>
+                  <h3 className="font-semibold group-hover:text-primary transition-colors">
+                  {req.category === 'other' ? req.custom_subject || req.subject : req.subject}
+                </h3>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={req.status === 'active' ? 'default' : 'secondary'}>
+                      {req.status}
+                    </Badge>
+                  </div>
                 </div>
-                <p className="text-sm text-muted-foreground mb-3">{req.description}</p>
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <p className="text-sm text-muted-foreground mb-3">
+                  {req.description}
+                </p>
+                
+                {/* Quick info */}
+                <div className="space-y-2 mb-3 text-xs text-muted-foreground">
+                  {req.category && (
+                    <div className="flex items-center gap-1">
+                      <Tag className="h-3 w-3" />
+                      <span className="capitalize">{req.category}</span>
+                    </div>
+                  )}
+                  {req.location && (
+                    <div className="flex items-center gap-1">
+                      <MapPin className="h-3 w-3" />
+                      <span>{req.location}</span>
+                    </div>
+                  )}
+                  {req.budget_range && (
+                    <div className="flex items-center gap-1">
+                      <IndianRupee className="h-3 w-3" />
+                      <span>₹{req.budget_range}</span>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-3">
                   <span>Posted {new Date(req.created_at).toLocaleDateString()}</span>
-                  <span>{req.responses || 0} responses</span>
+                  {req.responses > 0 ? (
+                    <div className="flex flex-col items-end gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // Show preview of first response
+                          const firstResponse = req.actualResponses[0];
+                          if (firstResponse) {
+                            handleResponsePreview(firstResponse, req);
+                          }
+                        }}
+                        className="text-primary font-medium cursor-pointer hover:text-primary/80 transition-colors"
+                      >
+                        {req.responses} response{req.responses > 1 ? 's' : ''}
+                      </button>
+                      {req.responses > 1 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewResponses(req);
+                    }}
+                          className="text-xs text-muted-foreground hover:text-primary transition-colors"
+                        >
+                          View all responses
+                  </button>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No responses yet</span>
+                  )}
+                </div>
+                
+                {/* Action buttons */}
+                <div className="flex items-center gap-2 pt-2 border-t border-border border-opacity-50">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 h-8 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewRequirementDetails(req);
+                    }}
+                  >
+                    <Eye className="h-3 w-3 mr-1" />
+                    View Details
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 h-8 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEditRequirement(req);
+                    }}
+                  >
+                    <Edit className="h-3 w-3 mr-1" />
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteRequirement(req.id);
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -6072,30 +7086,460 @@ function RequirementsDashboard({ onPostRequirement, refreshTrigger }: { onPostRe
           </CardContent>
         </Card>
       )}
+
+      {/* Response Preview Modal */}
+      <Dialog open={showResponsePreview} onOpenChange={setShowResponsePreview}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="h-5 w-5" />
+              Tutor Response Preview
+            </DialogTitle>
+            <DialogDescription>
+              Response to your requirement: <span className="font-medium">{selectedRequirement?.subject}</span>
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedResponse && (
+            <div className="space-y-4">
+              <Card className="border-l-4 border-l-primary">
+                <CardContent className="p-4">
+                  <div className="flex items-start gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={selectedResponse.tutor?.avatar} />
+                      <AvatarFallback>
+                        {selectedResponse.tutor?.name?.charAt(0)?.toUpperCase() || 'T'}
+                      </AvatarFallback>
+                    </Avatar>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="font-semibold text-sm">{selectedResponse.tutor?.name}</h4>
+                        <Badge 
+                          variant={selectedResponse.status === 'interested' ? 'default' : 'secondary'}
+                          className="text-xs"
+                        >
+                          {selectedResponse.status === 'interested' ? 'Interested' : 'Message Sent'}
+                        </Badge>
+                      </div>
+                      
+                      {selectedResponse.response_message && (
+                        <div className="mb-3">
+                          <p className="text-sm text-muted-foreground mb-2">
+                            "{selectedResponse.response_message}"
+                          </p>
+                          <div className="text-xs text-muted-foreground">
+                            Responded {new Date(selectedResponse.created_at).toLocaleDateString()} at {new Date(selectedResponse.created_at).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="flex items-center gap-4 text-xs text-muted-foreground mb-3">
+                        {selectedResponse.tutor?.experience_years && (
+                          <span className="flex items-center gap-1">
+                            <Award className="h-3 w-3" />
+                            {selectedResponse.tutor.experience_years} years exp.
+                          </span>
+                        )}
+                        {selectedResponse.tutor?.hourly_rate && (
+                          <span className="flex items-center gap-1">
+                            <IndianRupee className="h-3 w-3" />
+                            {selectedResponse.tutor.hourly_rate}/hr
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              
+              <div className="flex gap-2 pt-2">
+                <Button 
+                  variant="outline" 
+                  onClick={closeResponsePreview}
+                  className="flex-1"
+                >
+                  Close
+                </Button>
+                {selectedRequirement?.responses > 1 && (
+                  <Button 
+                    variant="outline"
+                    onClick={() => {
+                      closeResponsePreview();
+                      handleViewResponses(selectedRequirement);
+                    }}
+                    className="flex-1"
+                  >
+                    <List className="h-4 w-4 mr-2" />
+                    View All ({selectedRequirement.responses})
+                  </Button>
+                )}
+                <Button 
+                  onClick={() => handleViewFullConversation(selectedResponse)}
+                  className="flex-1"
+                  disabled={isOpeningConversation}
+                >
+                  {isOpeningConversation ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Opening...
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle className="h-4 w-4 mr-2" />
+                      View Full Conversation
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Responses Modal */}
+      <Dialog open={showResponsesModal} onOpenChange={setShowResponsesModal}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="h-5 w-5" />
+              Tutor Responses
+            </DialogTitle>
+            <DialogDescription>
+              Responses to your requirement: <span className="font-medium">{selectedRequirement?.subject}</span>
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {loadingResponses ? (
+              <div className="text-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">Loading responses...</p>
+              </div>
+            ) : responses.length > 0 ? (
+              responses.map((response, idx) => (
+                <Card key={idx} className="border-l-4 border-l-primary">
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <Avatar className="h-10 w-10">
+                        <AvatarImage src={response.tutor?.avatar} />
+                        <AvatarFallback>
+                          {response.tutor?.name?.charAt(0)?.toUpperCase() || 'T'}
+                        </AvatarFallback>
+                      </Avatar>
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="font-semibold text-sm">{response.tutor?.name}</h4>
+                          <Badge 
+                            variant={response.status === 'interested' ? 'default' : 'secondary'}
+                            className="text-xs"
+                          >
+                            {response.status === 'interested' ? 'Interested' : 'Message Sent'}
+                          </Badge>
+                        </div>
+                        
+                        {response.response_message && (
+                          <p className="text-sm text-muted-foreground mb-2">
+                            "{response.response_message}"
+                          </p>
+                        )}
+                        
+                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                          {response.tutor?.experience_years && (
+                            <span className="flex items-center gap-1">
+                              <Award className="h-3 w-3" />
+                              {response.tutor.experience_years} years exp.
+                            </span>
+                          )}
+                          {response.tutor?.hourly_rate && (
+                            <span className="flex items-center gap-1">
+                              <IndianRupee className="h-3 w-3" />
+                              {response.tutor.hourly_rate}/hr
+                            </span>
+                          )}
+                          {response.tutor?.subjects && (
+                            <span className="flex items-center gap-1">
+                              <BookOpen className="h-3 w-3" />
+                              {Array.isArray(response.tutor.subjects) ? response.tutor.subjects.join(', ') : response.tutor.subjects}
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div className="mt-3 text-xs text-muted-foreground">
+                          Responded {new Date(response.created_at).toLocaleDateString()} at {new Date(response.created_at).toLocaleTimeString()}
+                        </div>
+                        
+                        {/* Action buttons */}
+                        <div className="mt-3 flex gap-2">
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => handleStartChat(response.tutor)}
+                            className="text-xs"
+                          >
+                            <MessageCircle className="h-3 w-3 mr-1" />
+                            Start Chat
+                          </Button>
+                          {response.proposed_rate && (
+                            <Badge variant="outline" className="text-xs">
+                              <IndianRupee className="h-3 w-3 mr-1" />
+                              {response.proposed_rate}/hr
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            ) : (
+              <div className="text-center py-8">
+                <MessageCircle className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+                <p className="text-muted-foreground">No responses yet</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Tutors will see your requirement and can respond with interest
+                </p>
+              </div>
+            )}
+          </div>
+          
+          <div className="flex justify-end pt-4 border-t">
+            <Button variant="outline" onClick={closeResponsesModal}>
+              Close
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Requirement Details Modal */}
+      <Dialog open={showRequirementDetails} onOpenChange={setShowRequirementDetails}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="h-5 w-5" />
+              Requirement Details
+            </DialogTitle>
+            <DialogDescription>
+              Complete details of your requirement
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedRequirement && (
+            <div className="space-y-6">
+              {/* Basic Information */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="font-medium">Category</Label>
+                    <p className="text-sm text-muted-foreground capitalize">{selectedRequirement.category || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <Label className="font-medium">Subject</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedRequirement.category === 'other' ? selectedRequirement.custom_subject || selectedRequirement.subject : selectedRequirement.subject}
+                    </p>
+                  </div>
+                </div>
+                
+                <div>
+                  <Label className="font-medium">Description</Label>
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">{selectedRequirement.description}</p>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="font-medium">Location</Label>
+                    <p className="text-sm text-muted-foreground">{selectedRequirement.location || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <Label className="font-medium">Budget</Label>
+                    <p className="text-sm text-muted-foreground">₹{selectedRequirement.budget_range || 'N/A'}</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="font-medium">Urgency</Label>
+                    <p className="text-sm text-muted-foreground capitalize">{selectedRequirement.urgency || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <Label className="font-medium">Status</Label>
+                    <Badge variant={selectedRequirement.status === 'active' ? 'default' : 'secondary'}>
+                      {selectedRequirement.status}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Category-specific details */}
+              {selectedRequirement.category === 'academic' && (
+                <div className="space-y-4 pt-4 border-t">
+                  <h4 className="font-medium">Academic Details</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    {selectedRequirement.class_level && (
+                      <div>
+                        <Label className="font-medium">Class Level</Label>
+                        <p className="text-sm text-muted-foreground">{selectedRequirement.class_level}</p>
+                      </div>
+                    )}
+                    {selectedRequirement.board && (
+                      <div>
+                        <Label className="font-medium">Board</Label>
+                        <p className="text-sm text-muted-foreground">
+                          {selectedRequirement.board === 'other' 
+                            ? selectedRequirement.custom_board || 'Custom Board' 
+                            : selectedRequirement.board}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              {selectedRequirement.category === 'test_preparation' && selectedRequirement.exam_preparation && (
+                <div className="space-y-4 pt-4 border-t">
+                  <h4 className="font-medium">Test Preparation Details</h4>
+                  <div>
+                    <Label className="font-medium">Exam</Label>
+                    <p className="text-sm text-muted-foreground">{selectedRequirement.exam_preparation}</p>
+                  </div>
+                </div>
+              )}
+              
+              {selectedRequirement.category === 'skills' && selectedRequirement.skill_level && (
+                <div className="space-y-4 pt-4 border-t">
+                  <h4 className="font-medium">Skill Details</h4>
+                  <div>
+                    <Label className="font-medium">Current Level</Label>
+                    <p className="text-sm text-muted-foreground capitalize">{selectedRequirement.skill_level}</p>
+                  </div>
+                </div>
+              )}
+              
+              {selectedRequirement.category === 'music' && selectedRequirement.age_group && (
+                <div className="space-y-4 pt-4 border-t">
+                  <h4 className="font-medium">Music Details</h4>
+                  <div>
+                    <Label className="font-medium">Age Group</Label>
+                    <p className="text-sm text-muted-foreground">{selectedRequirement.age_group}</p>
+                  </div>
+                </div>
+              )}
+              
+              {selectedRequirement.category === 'other' && (
+                <div className="space-y-4 pt-4 border-t">
+                  <h4 className="font-medium">Custom Details</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    {selectedRequirement.custom_category && (
+                      <div>
+                        <Label className="font-medium">Custom Category</Label>
+                        <p className="text-sm text-muted-foreground">{selectedRequirement.custom_category}</p>
+                      </div>
+                    )}
+                    {selectedRequirement.custom_subject && (
+                      <div>
+                        <Label className="font-medium">Custom Subject/Skill</Label>
+                        <p className="text-sm text-muted-foreground">{selectedRequirement.custom_subject}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              {/* Additional preferences */}
+              <div className="space-y-4 pt-4 border-t">
+                <h4 className="font-medium">Preferences</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  {selectedRequirement.preferred_gender && (
+                    <div>
+                      <Label className="font-medium">Preferred Gender</Label>
+                      <p className="text-sm text-muted-foreground capitalize">{selectedRequirement.preferred_gender}</p>
+                    </div>
+                  )}
+                  {selectedRequirement.experience_level && (
+                    <div>
+                      <Label className="font-medium">Experience Level</Label>
+                      <p className="text-sm text-muted-foreground capitalize">{selectedRequirement.experience_level}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* Timestamps */}
+              <div className="space-y-2 pt-4 border-t text-xs text-muted-foreground">
+                <p>Posted: {new Date(selectedRequirement.created_at).toLocaleString()}</p>
+                {selectedRequirement.updated_at && selectedRequirement.updated_at !== selectedRequirement.created_at && (
+                  <p>Last updated: {new Date(selectedRequirement.updated_at).toLocaleString()}</p>
+                )}
+              </div>
+            </div>
+          )}
+          
+          <div className="flex justify-between pt-4 border-t">
+            <div className="flex gap-2">
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  closeRequirementDetails();
+                  if (selectedRequirement) {
+                    handleEditRequirement(selectedRequirement);
+                  }
+                }}
+              >
+                <Edit className="h-4 w-4 mr-2" />
+                Edit
+              </Button>
+              <Button 
+                variant="outline" 
+                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                onClick={() => {
+                  if (selectedRequirement) {
+                    closeRequirementDetails();
+                    handleDeleteRequirement(selectedRequirement.id);
+                  }
+                }}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </Button>
+            </div>
+            <Button variant="outline" onClick={closeRequirementDetails}>
+              Close
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Edit Requirement Modal */}
+      {showEditModal && editingRequirement && (
+        <RequirementEditModal
+          requirement={editingRequirement}
+          onClose={closeEditModal}
+          onUpdate={() => {
+            closeEditModal();
+            loadRequirements(); // Reload requirements after update
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // Requirement Posting Modal Component
-function RequirementPostingModal({ 
-  onClose, 
-  onPostRequirement 
-}: { 
-  onClose: () => void;
-  onPostRequirement: (data: any) => void;
-}) {
+function RequirementPostingModal({ onClose, onPostRequirement }: { onClose: () => void; onPostRequirement: (data: any) => void }) {
   const { toast } = useToast();
   const [formData, setFormData] = useState({
     category: '',
     subject: '',
-    location: '',
     description: '',
-    preferredTeachingMode: 'online',
-    preferredTime: 'flexible',
-    budgetRange: '1000-2000',
-    urgency: 'normal',
-    additionalRequirements: '',
-    // Dynamic fields based on category
+    urgency: '',
+    budgetRange: '',
+    location: '',
+    preferredTeachingMode: '',
+    preferredTime: '',
+    preferredGender: '',
+    experienceLevel: '',
     classLevel: '',
     board: '',
     examPreparation: '',
@@ -6104,116 +7548,14 @@ function RequirementPostingModal({
     specificTopics: '',
     learningGoals: ''
   });
-  const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
-
-  // Validation function
-  const validateField = (field: string, value: string): string => {
-    if (!value || value.trim() === '') {
-      return `${field.charAt(0).toUpperCase() + field.slice(1)} is required`;
-    }
-    return '';
-  };
-
-  // Validate all fields
-  const validateForm = (): boolean => {
-    const newErrors: Record<string, string> = {};
-    
-    // Basic required fields
-    newErrors.category = validateField('category', formData.category);
-    newErrors.subject = validateField('subject', formData.subject);
-    newErrors.location = validateField('location', formData.location);
-    newErrors.description = validateField('description', formData.description);
-    
-    // Category-specific validations
-    if (formData.category === 'academic') {
-      newErrors.classLevel = validateField('class level', formData.classLevel);
-      newErrors.board = validateField('board', formData.board);
-    }
-    
-    if (formData.category === 'test_preparation') {
-      newErrors.examPreparation = validateField('exam preparation level', formData.examPreparation);
-      newErrors.specificTopics = validateField('specific topics', formData.specificTopics);
-    }
-    
-    if (formData.category === 'languages') {
-      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
-      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
-    }
-    
-    if (formData.category === 'skills') {
-      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
-      newErrors.ageGroup = validateField('age group', formData.ageGroup);
-    }
-    
-    if (formData.category === 'music') {
-      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
-      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
-    }
-    
-    if (formData.category === 'sports') {
-      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
-      newErrors.ageGroup = validateField('age group', formData.ageGroup);
-    }
-    
-    if (formData.category === 'technology') {
-      newErrors.skillLevel = validateField('skill level', formData.skillLevel);
-      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
-    }
-    
-    if (formData.category === 'business') {
-      newErrors.skillLevel = validateField('experience level', formData.skillLevel);
-      newErrors.learningGoals = validateField('learning goals', formData.learningGoals);
-    }
-    
-    setErrors(newErrors);
-    return Object.values(newErrors).every(error => error === '');
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    // Mark all fields as touched
-    const allFields = Object.keys(formData);
-    const touchedFields = allFields.reduce((acc, field) => ({ ...acc, [field]: true }), {});
-    setTouched(touchedFields);
-    
-    // Validate form
-    if (!validateForm()) {
-      toast({
-        title: "Validation Error",
-        description: "Please fill in all required fields",
-        variant: "destructive",
-      });
-      return;
-    }
-    
-    setLoading(true);
-    
-    try {
-      await onPostRequirement(formData);
-    } catch (error) {
-      console.error('Error submitting requirement:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [loading, setLoading] = useState(false);
 
   const handleInputChange = (field: string, value: string) => {
-    console.log(`Updating ${field} to:`, value);
-    
-    // Mark field as touched
-    setTouched(prev => ({ ...prev, [field]: true }));
-    
-    // Clear error for this field
-    setErrors(prev => ({ ...prev, [field]: '' }));
-    
-    setFormData(prev => ({ 
-      ...prev, 
+    setFormData(prev => ({
+      ...prev,
       [field]: value,
-      // Reset related fields when category changes
-      ...(field === 'category' && { 
+      ...(field === 'category' && {
         subject: '',
         classLevel: '',
         board: '',
@@ -6224,54 +7566,120 @@ function RequirementPostingModal({
         learningGoals: ''
       })
     }));
+    setTouched(prev => ({ ...prev, [field]: true }));
   };
 
-  // Check if form is valid for submit button
-  const isFormValid = (): boolean => {
-    // Basic required fields
-    if (!formData.category || !formData.subject || !formData.location || !formData.description) {
-      return false;
-    }
+  const validateForm = () => {
+    const requiredFields = ['category', 'subject', 'description', 'urgency', 'budgetRange', 'location'];
+    return requiredFields.every(field => formData[field as keyof typeof formData].trim() !== '');
+  };
+
+  const showError = (field: string) => {
+    const value = formData[field as keyof typeof formData];
+    return touched[field] && (!value || (typeof value === 'string' && !value.trim()));
+  };
+
+  const isFormValid = () => {
+    const basicValidation = validateForm();
+    console.log('Basic validation result:', basicValidation);
+    console.log('Form data for validation:', formData);
     
-    // Category-specific validations
+    if (!basicValidation) return false;
+    
+    // Category-specific validation
     if (formData.category === 'academic' && (!formData.classLevel || !formData.board)) {
+      console.log('Academic validation failed: classLevel:', formData.classLevel, 'board:', formData.board);
+      return false;
+    }
+    if (formData.category === 'test_preparation' && !formData.examPreparation) {
+      console.log('Test preparation validation failed: examPreparation:', formData.examPreparation);
+      return false;
+    }
+    if (formData.category === 'skills' && !formData.skillLevel) {
+      console.log('Skills validation failed: skillLevel:', formData.skillLevel);
+      return false;
+    }
+    if (formData.category === 'music' && !formData.ageGroup) {
+      console.log('Music validation failed: ageGroup:', formData.ageGroup);
       return false;
     }
     
-    if (formData.category === 'test_preparation' && (!formData.examPreparation || !formData.specificTopics)) {
-      return false;
-    }
-    
-    if (formData.category === 'languages' && (!formData.skillLevel || !formData.learningGoals)) {
-      return false;
-    }
-    
-    if (formData.category === 'skills' && (!formData.skillLevel || !formData.ageGroup)) {
-      return false;
-    }
-    
-    if (formData.category === 'music' && (!formData.skillLevel || !formData.learningGoals)) {
-      return false;
-    }
-    
-    if (formData.category === 'sports' && (!formData.skillLevel || !formData.ageGroup)) {
-      return false;
-    }
-    
-    if (formData.category === 'technology' && (!formData.skillLevel || !formData.learningGoals)) {
-      return false;
-    }
-    
-    if (formData.category === 'business' && (!formData.skillLevel || !formData.learningGoals)) {
-      return false;
-    }
-    
+    console.log('All validations passed');
     return true;
   };
 
-  // Helper function to show error message
-  const showError = (field: string): string | undefined => {
-    return touched[field] && errors[field] ? errors[field] : undefined;
+  const getSubjectOptions = () => {
+    const subjectsByCategory = {
+      academic: ['Mathematics', 'Physics', 'Chemistry', 'Biology', 'English', 'Hindi', 'Social Studies', 'Computer Science', 'Economics', 'Accountancy'],
+      languages: ['English', 'Hindi', 'Spanish', 'French', 'German', 'Mandarin', 'Japanese', 'Arabic'],
+      skills: ['Cooking', 'Photography', 'Drawing', 'Dancing', 'Coding', 'Digital Marketing', 'Public Speaking'],
+      test_preparation: ['JEE', 'NEET', 'CAT', 'GATE', 'UPSC', 'IELTS', 'TOEFL', 'SAT', 'GRE'],
+      music: ['Piano', 'Guitar', 'Violin', 'Drums', 'Singing', 'Flute', 'Keyboard'],
+      sports: ['Cricket', 'Football', 'Basketball', 'Tennis', 'Swimming', 'Badminton', 'Yoga'],
+      technology: ['Web Development', 'App Development', 'Data Science', 'AI/ML', 'Cybersecurity', 'UI/UX Design'],
+      business: ['Marketing', 'Finance', 'Management', 'Entrepreneurship', 'Investment', 'Accounting'],
+      other: ['Custom Subject']
+    };
+    return subjectsByCategory[formData.category as keyof typeof subjectsByCategory] || [];
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Mark all fields as touched
+    const allFields = Object.keys(formData);
+    setTouched(allFields.reduce((acc, field) => ({ ...acc, [field]: true }), {}));
+    
+    if (!validateForm()) {
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all required fields.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    // Category-specific validation
+    if (formData.category === 'academic' && (!formData.classLevel || !formData.board)) {
+      toast({
+        title: "Academic Details Required",
+        description: "Please select class level and board for academic subjects.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    if (formData.category === 'test_preparation' && !formData.examPreparation) {
+      toast({
+        title: "Exam Details Required",
+        description: "Please specify which exam you're preparing for.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    if (formData.category === 'skills' && !formData.skillLevel) {
+      toast({
+        title: "Skill Level Required",
+        description: "Please specify your current skill level.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    if (formData.category === 'music' && !formData.ageGroup) {
+      toast({
+        title: "Age Group Required",
+        description: "Please specify the age group for music lessons.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setLoading(true);
+    await onPostRequirement(formData);
+    setLoading(false);
+    onClose();
   };
 
   return (
