@@ -142,15 +142,19 @@ export default function TutorDashboard() {
 
   const checkAuth = async () => {
     try {
+      console.log('🔍 [TutorDashboard] Starting authentication check...');
       const { data: { user } } = await supabase.auth.getUser();
+      
       if (user) {
+        console.log('🔍 [TutorDashboard] User authenticated:', user.id);
         setUser(user);
         await loadUserData(user.id);
       } else {
+        console.log('🔍 [TutorDashboard] No user found, redirecting to login');
         navigate("/login");
       }
     } catch (error) {
-      console.error("Auth check failed:", error);
+      console.error("❌ [TutorDashboard] Auth check failed:", error);
       navigate("/login");
     } finally {
       setLoading(false);
@@ -161,17 +165,51 @@ export default function TutorDashboard() {
     try {
       console.log('loadUserData called for userId:', userId);
       
-      // Load user profile
+      // Load user profile - STRICT role validation to prevent mixing
       const { data: profileData, error: profileError } = await supabase
         .from("profiles")
         .select("*")
         .eq("user_id", userId)
+        .eq("role", "tutor") // STRICT: Only load tutor profiles
         .single();
 
       if (profileError) {
-        console.error("Error loading profile:", profileError);
+        console.error("❌ [TutorDashboard] Error loading profile:", profileError);
+        
+        if (profileError.code === 'PGRST116') {
+          // No profile found
+          toast({
+            title: "Profile Not Found",
+            description: "No tutor profile found. Please complete your tutor registration.",
+            variant: "destructive",
+          });
+          navigate("/signup-choice");
+          return;
+        }
+        
+        // If no tutor profile found, redirect to login
+        toast({
+          title: "Access Denied",
+          description: "This dashboard is only for tutors. Please log in with a tutor account.",
+          variant: "destructive",
+        });
+        navigate("/login");
+        return;
       } else {
-        console.log('Profile data loaded:', profileData);
+        console.log('🔍 [TutorDashboard] Tutor profile data loaded:', profileData);
+        
+        // Double-check role to prevent any mixing
+        if (profileData.role !== "tutor") {
+          console.error("❌ [TutorDashboard] Role mismatch! Expected 'tutor', got:", profileData.role);
+          toast({
+            title: "Access Denied",
+            description: "This dashboard is only for tutors. Please log in with a tutor account.",
+            variant: "destructive",
+          });
+          navigate("/login");
+          return;
+        }
+        
         setUserProfile(profileData);
       }
 
@@ -237,8 +275,11 @@ export default function TutorDashboard() {
       // Get unique student IDs from interest notifications
       const studentIds = new Set();
       interestNotifications?.forEach(notification => {
-        if (notification.data && notification.data.student_id) {
-          studentIds.add(notification.data.student_id);
+        if (notification.data && typeof notification.data === 'object' && 'student_id' in notification.data) {
+          const studentId = (notification.data as any).student_id;
+          if (studentId) {
+            studentIds.add(studentId);
+          }
         }
       });
 
@@ -257,13 +298,10 @@ export default function TutorDashboard() {
               city,
               area,
               primary_language,
-              education_level,
-              learning_mode,
-              subject_interests,
-              budget_min,
-              budget_max
+              role
             `)
             .eq('user_id', studentId)
+            .eq('role', 'student') // STRICT: Only student role, no role mixing
             .single();
 
           if (profileError) {
@@ -275,18 +313,14 @@ export default function TutorDashboard() {
           const { data: studentLearningData, error: learningError } = await supabase
             .from('student_profiles')
             .select(`
-              education_level,
-              learning_mode,
-              subject_interests,
-              budget_min,
-              budget_max
+              education_level
             `)
             .eq('user_id', studentId)
             .single();
 
           // Find the most recent interest notification for this student
           const recentInterest = interestNotifications?.find(n => 
-            n.data && n.data.student_id === studentId
+            n.data && typeof n.data === 'object' && 'student_id' in n.data && (n.data as any).student_id === studentId
           );
 
           studentsList.push({
@@ -297,11 +331,9 @@ export default function TutorDashboard() {
             area: studentProfile.area || '',
             primary_language: studentProfile.primary_language || '',
             education_level: studentLearningData?.education_level || '',
-            learning_mode: studentLearningData?.learning_mode || '',
-            subject_interests: studentLearningData?.subject_interests || [],
-            budget_range: studentLearningData?.budget_min && studentLearningData?.budget_max 
-              ? `₹${studentLearningData.budget_min}-${studentLearningData.budget_max}/hr`
-              : 'Not specified',
+            learning_mode: 'Not specified',
+            subject_interests: [],
+            budget_range: 'Not specified',
             interest_date: recentInterest ? new Date(recentInterest.created_at).toLocaleDateString() : '',
             progress: Math.floor(Math.random() * 100), // Placeholder - would come from actual progress tracking
             lastClass: 'Not started yet' // Placeholder - would come from actual class history
@@ -322,11 +354,12 @@ export default function TutorDashboard() {
 
   const openChatWithStudent = async (studentUserId: string) => {
     try {
-      // Fetch student name and profile photo for display
+      // Fetch student name and profile photo for display - STRICT role filtering
       const { data: profile } = await supabase
         .from('profiles')
-        .select('full_name, profile_photo_url')
+        .select('full_name, profile_photo_url, role')
         .eq('user_id', studentUserId)
+        .eq('role', 'student') // STRICT: Only student role, no role mixing
         .single();
 
       setState(prev => ({
@@ -660,17 +693,21 @@ export default function TutorDashboard() {
   }, []);
 
   // Load requirements that match this tutor's profile
-  const loadRequirements = useCallback(async () => {
+  const loadRequirements = useCallback(async (forceRefresh = false) => {
     try {
       setRequirementsLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
+      
+      if (forceRefresh) {
+        console.log('🔄 [TutorDashboard] Force refreshing requirements...');
+      }
 
       console.log('🔍 [Main] Loading requirements for tutor:', user.id);
       console.log('🔍 [Main] Tutor profile:', tutorProfile);
       console.log('🔍 [Main] User profile:', userProfile);
 
-      // Get active requirements that match this tutor's subjects and location
+      // Get ONLY active requirements that match this tutor's subjects and location (exclude deleted, cancelled, completed, etc.)
       const { data: requirementsData, error } = await supabase
         .from('requirements')
         .select('*')
@@ -681,8 +718,26 @@ export default function TutorDashboard() {
         console.error("❌ [Main] Error loading requirements:", error);
         setRequirements([]);
       } else {
-        console.log('📋 [Main] Raw requirements data:', requirementsData);
-        console.log('📋 [Main] Total requirements found:', requirementsData?.length || 0);
+        console.log('🔍 [Main] Raw requirements data:', requirementsData);
+        console.log('🔍 [Main] Total requirements found:', requirementsData?.length || 0);
+        
+        // Debug: Check if any deleted requirements are slipping through
+        if (requirementsData && requirementsData.length > 0) {
+          const statusCounts = requirementsData.reduce((acc: any, req) => {
+            acc[req.status] = (acc[req.status] || 0) + 1;
+            return acc;
+          }, {});
+          console.log('🔍 [Main] Requirements by status:', statusCounts);
+          
+          // Check for any non-active statuses and filter them out
+          const nonActiveRequirements = requirementsData.filter(req => req.status !== 'active');
+          if (nonActiveRequirements.length > 0) {
+            console.warn('⚠️ [Main] Found non-active requirements, filtering them out:', nonActiveRequirements.map(r => ({ id: r.id, status: r.status, subject: r.subject })));
+            // Filter out non-active requirements for extra safety
+            requirementsData = requirementsData.filter(req => req.status === 'active');
+            console.log('🔍 [Main] After filtering, active requirements count:', requirementsData.length);
+          }
+        }
         
         // Fetch student data for each requirement
         let requirementsWithStudents = requirementsData || [];
@@ -694,11 +749,12 @@ export default function TutorDashboard() {
           console.log('📋 [Main] Student IDs found:', studentIds);
           
           if (studentIds.length > 0) {
-            // Fetch student profiles
+            // Fetch student profiles - STRICT role filtering to prevent mixing
             const { data: studentProfiles, error: studentError } = await supabase
               .from('profiles')
-              .select('user_id, full_name, profile_photo_url, city, area')
-              .in('user_id', studentIds);
+              .select('user_id, full_name, profile_photo_url, city, area, role')
+              .in('user_id', studentIds)
+              .eq('role', 'student'); // STRICT: Only student role, no role mixing
             
             if (!studentError && studentProfiles) {
               console.log('📋 [Main] Student profiles fetched:', studentProfiles);
@@ -765,23 +821,70 @@ export default function TutorDashboard() {
         
         // Check which requirements this tutor has already responded to
         if (filteredRequirements && filteredRequirements.length > 0) {
+          console.log('🔍 [Debug] Checking responses for requirements:', filteredRequirements.map(r => ({ id: r.id, subject: r.subject })));
+          
           const { data: responsesData, error: responsesError } = await supabase
             .from('requirement_tutor_matches')
-            .select('requirement_id, status')
+            .select('requirement_id, status, created_at, updated_at')
             .eq('tutor_id', user.id)
-            .in('requirement_id', filteredRequirements.map(r => r.id));
+            .in('requirement_id', filteredRequirements.map(r => r.id))
+            .order('updated_at', { ascending: false });
+
+          console.log('🔍 [Database] Raw responses data from DB:', responsesData);
+          console.log('🔍 [Database] Database query error:', responsesError);
 
           if (!responsesError && responsesData) {
-            // Mark requirements that have responses
-            const requirementsWithResponses = filteredRequirements.map(req => ({
+            // Filter out requirements that have been declined by this tutor
+            const requirementsWithResponses = filteredRequirements
+              .filter(req => {
+                const response = responsesData.find(resp => resp.requirement_id === req.id);
+                console.log(`🔍 [Filter] Requirement ${req.subject} (${req.id}):`, {
+                  hasResponse: !!response,
+                  responseStatus: response?.status,
+                  responseCreated: response?.created_at,
+                  responseUpdated: response?.updated_at
+                });
+                
+                // Exclude requirements that have been declined by this tutor
+                if (response && response.status === 'not_interested') {
+                  console.log(`🚫 [Filter] Excluding declined requirement: ${req.subject} (ID: ${req.id})`);
+                  return false;
+                }
+                return true;
+              })
+              .map(req => {
+                const response = responsesData.find(resp => resp.requirement_id === req.id);
+                const hasResponded = response && response.status === 'interested';
+                
+                console.log(`🔍 [Map] Mapping requirement ${req.subject}:`, {
+                  id: req.id,
+                  hasResponse: !!response,
+                  responseStatus: response?.status,
+                  hasResponded: hasResponded
+                });
+                
+                return {
               ...req,
-              hasResponded: responsesData.some(resp => resp.requirement_id === req.id)
-            }));
+                  hasResponded: hasResponded,
+                  responseStatus: response?.status || null
+                };
+              });
+            
+            console.log('🔍 [Frontend] Final requirements being set:', requirementsWithResponses.map(req => ({
+              id: req.id,
+              subject: req.subject,
+              hasResponded: req.hasResponded,
+              responseStatus: req.responseStatus
+            })));
+            
+            console.log(`✅ [Filter] Requirements after filtering declined: ${requirementsWithResponses.length}/${filteredRequirements.length}`);
             setRequirements(requirementsWithResponses);
           } else {
+            console.log('⚠️ [Warning] No responses data or error occurred, setting unfiltered requirements');
             setRequirements(filteredRequirements);
           }
         } else {
+          console.log('⚠️ [Warning] No filtered requirements to check');
           setRequirements([]);
         }
       }
@@ -799,17 +902,17 @@ export default function TutorDashboard() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Update or create the requirement_tutor_matches record
-      const { error: matchError } = await supabase
-        .from('requirement_tutor_matches')
-        .upsert({
-          requirement_id: requirementId,
-          tutor_id: user.id,
-          status: status,
-          response_message: message || null,
-          proposed_rate: proposedRate || null,
-          updated_at: new Date().toISOString()
-        });
+      // Use the improved function to handle requirement-tutor matches
+      const { data: matchResult, error: matchError } = await supabase.rpc(
+        'handle_requirement_tutor_match',
+        {
+          p_requirement_id: requirementId,
+          p_tutor_id: user.id,
+          p_status: status,
+          p_response_message: message || null,
+          p_proposed_rate: proposedRate || null
+        }
+      );
 
       if (matchError) {
         console.error("Error updating requirement match:", matchError);
@@ -925,7 +1028,7 @@ export default function TutorDashboard() {
     };
   }, [user, toast, loadUnreadMessagesCount]);
 
-  // Set up real-time subscription for new requirements
+  // Set up real-time subscription for requirements changes (INSERT, UPDATE, DELETE)
   useEffect(() => {
     if (!user) return;
 
@@ -934,20 +1037,54 @@ export default function TutorDashboard() {
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*', // Listen to ALL events: INSERT, UPDATE, DELETE
           schema: 'public',
-          table: 'requirements',
-          filter: 'status=eq.active'
+          table: 'requirements'
+          // Removed filter to listen to ALL requirements changes, including status changes
         },
         (payload) => {
-          // Check if this requirement matches the tutor's profile
+          console.log('🔔 [TutorDashboard] Requirements change detected:', payload.event, payload);
+          
+          // Handle different types of changes
+          switch (payload.event) {
+            case 'INSERT':
+              // New requirement added
           const newRequirement = payload.new;
-          if (tutorProfile?.subjects?.includes(newRequirement.subject)) {
+              if (newRequirement && newRequirement.status === 'active') {
+                console.log('🆕 [TutorDashboard] New active requirement detected, refreshing...');
             loadRequirements(); // Refresh requirements list
             toast({
               title: 'New Requirement Available!',
               description: `A student is looking for ${newRequirement.subject} tutoring.`,
             });
+              }
+              break;
+              
+            case 'UPDATE':
+              // Requirement updated (status changed, deleted, etc.)
+              const updatedRequirement = payload.new;
+              console.log('🔄 [TutorDashboard] Requirement updated, status:', updatedRequirement.status);
+              
+              // ALWAYS refresh on any update to ensure sync
+              loadRequirements();
+              
+              if (updatedRequirement.status !== 'active') {
+                toast({
+                  title: 'Requirement Updated',
+                  description: `A requirement has been ${updatedRequirement.status}.`,
+                });
+              }
+              break;
+              
+            case 'DELETE':
+              // Requirement deleted
+              console.log('🗑️ [TutorDashboard] Requirement deleted, refreshing...');
+              loadRequirements(); // Refresh to remove deleted requirement
+              toast({
+                title: 'Requirement Removed',
+                description: 'A requirement has been deleted.',
+              });
+              break;
           }
         }
       )
@@ -966,9 +1103,12 @@ export default function TutorDashboard() {
       .channel('tutor-messages')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` },
-        () => {
-          loadUnreadMessagesCount();
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` },
+        (payload) => {
+          // Only increase unread count if the message is not from the current user
+          if (payload.new && payload.new.sender_id !== user.id) {
+            setUnreadCount(prev => prev + 1);
+          }
         }
       )
       .subscribe();
@@ -977,6 +1117,24 @@ export default function TutorDashboard() {
       supabase.removeChannel(messagesChannel);
     };
   }, [user, loadUnreadMessagesCount]);
+
+  // Listen for unread count updates from child components
+  useEffect(() => {
+    const handleUnreadCountUpdate = (event: CustomEvent) => {
+      const { decrease, increase } = event.detail;
+      setUnreadCount(prev => {
+        if (decrease) return Math.max(0, prev - decrease);
+        if (increase) return prev + increase;
+        return prev;
+      });
+    };
+
+    window.addEventListener('unread-count-updated', handleUnreadCountUpdate as EventListener);
+    
+    return () => {
+      window.removeEventListener('unread-count-updated', handleUnreadCountUpdate as EventListener);
+    };
+  }, []);
 
 
 
@@ -2834,10 +2992,12 @@ function MessagingDashboard({
   onOpenChatWithStudent: (studentUserId: string) => void;
 }) {
   const { toast } = useToast();
-  const [message, setMessage] = useState("");
+
   const [conversations, setConversations] = useState<any[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentConversationMessages, setCurrentConversationMessages] = useState<any[]>([]);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState<{id: string, name: string} | null>(null);
 
   useEffect(() => {
     // Load conversations from database
@@ -2922,9 +3082,11 @@ function MessagingDashboard({
           .select(`
             user_id,
             full_name,
-            profile_photo_url
+            profile_photo_url,
+            role
           `)
           .eq('user_id', studentId)
+          .eq('role', 'student') // STRICT: Only show actual students, no role mixing
           .single();
 
         if (studentError) {
@@ -2967,87 +3129,68 @@ function MessagingDashboard({
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!message.trim() || !selectedStudent) return;
-    
-    console.log('🔍 [handleSendMessage] selectedStudent:', selectedStudent);
-    console.log('🔍 [handleSendMessage] selectedStudent.id:', selectedStudent?.id);
-    console.log('🔍 [handleSendMessage] selectedStudent.user_id:', selectedStudent?.user_id);
+  const handleDeleteConversation = async (studentId: string, studentName: string) => {
+    // Set conversation to delete and show confirmation dialog
+    setConversationToDelete({ id: studentId, name: studentName });
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDeleteConversation = async () => {
+    if (!conversationToDelete) return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      if (!user) return;
+
+      console.log(`🗑️ [TutorDashboard] Deleting conversation with student: ${conversationToDelete.id}`);
+
+      // Delete all messages between this tutor and student
+      const { error: deleteError } = await supabase
+        .from('messages')
+        .delete()
+        .or(`and(sender_id.eq.${user.id},receiver_id.eq.${conversationToDelete.id}),and(sender_id.eq.${conversationToDelete.id},receiver_id.eq.${user.id})`);
+
+      if (deleteError) {
+        console.error('Error deleting messages:', deleteError);
         toast({
           title: "Error",
-          description: "You must be logged in to send messages.",
+          description: "Failed to delete conversation. Please try again.",
           variant: "destructive",
         });
         return;
       }
 
-      // Get the correct receiver ID - try different possible fields
-      const receiverId = selectedStudent.id || selectedStudent.user_id;
-      console.log('🔍 [handleSendMessage] Using receiver_id:', receiverId);
+      console.log('✅ [TutorDashboard] Conversation deleted successfully');
       
-      if (!receiverId) {
-        console.error('❌ [handleSendMessage] selectedStudent structure:', selectedStudent);
-        throw new Error('No valid receiver ID found in selectedStudent. Check console for details.');
-      }
-
-      // Insert the message into the database
-      const { data: newMessage, error } = await supabase
-        .from('messages')
-        .insert({
-          sender_id: user.id,
-          receiver_id: receiverId,
-          content: message.trim()
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // Clear the message input
-      setMessage("");
+      // Remove conversation from local state
+      setConversations(prev => prev.filter(conv => conv.id !== conversationToDelete.id));
       
-      // Add message to local state immediately for instant display
-      if (newMessage) {
-        // Add to current conversation messages for instant display
-        setCurrentConversationMessages(prev => [...prev, newMessage]);
-        
-        // Trigger real-time update for other components
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('conversations-updated'));
-        }
+      // Clear selected student if it was the deleted one
+      if (selectedStudent && selectedStudent.id === conversationToDelete.id) {
+        onOpenChatWithStudent(''); // Clear selection
       }
 
-      // Create a notification for the student with tutor name (best-effort)
-      try {
-        const { data: senderProfile } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('user_id', user.id)
-          .single();
+      toast({
+        title: "Conversation Deleted",
+        description: `Conversation with ${conversationToDelete.name} has been deleted.`,
+        variant: "default",
+      });
 
-        await supabase.rpc('create_notification', {
-          p_user_id: receiverId,
-          p_title: 'New Message',
-          p_message: `You have a new message from ${senderProfile?.full_name || 'a tutor'}.`,
-          p_type: 'message',
-          p_data: { sender_id: user.id } as any
-        });
-      } catch (notifyErr) {
-        console.warn('Notification creation failed (message sent ok):', notifyErr);
-      }
-    } catch (error: any) {
-      console.error("Error sending message:", error);
+      // Close confirmation dialog and reset state
+      setShowDeleteConfirm(false);
+      setConversationToDelete(null);
+
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
       toast({
         title: "Error",
-        description: error?.message || "Failed to send message. Please try again.",
+        description: "Failed to delete conversation. Please try again.",
         variant: "destructive",
       });
     }
   };
+
+
 
   return (
     <div className="space-y-6">
@@ -3071,7 +3214,10 @@ function MessagingDashboard({
                 conversations.map((conv) => (
                   <div 
                     key={conv.id} 
-                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted cursor-pointer"
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted group"
+                  >
+                    <div 
+                      className="flex items-center gap-3 flex-1 cursor-pointer"
                     onClick={() => onOpenChatWithStudent(conv.id)}
                   >
                     <Avatar>
@@ -3089,6 +3235,20 @@ function MessagingDashboard({
                       <p className="text-sm text-muted-foreground truncate">{conv.lastMessage}</p>
                     </div>
                     {conv.unread && <div className="w-2 h-2 bg-primary rounded-full"></div>}
+                    </div>
+                    
+                    {/* Delete Conversation Button */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteConversation(conv.id, conv.student);
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
                   </div>
               ))
             ) : (
@@ -3128,22 +3288,15 @@ function MessagingDashboard({
                     <ChatMessages 
                       selectedStudent={selectedStudent} 
                       onMessageSent={(message) => {
-                        // This will be called when a message is sent
-                        // The real-time subscription will handle adding it to display
+                        // Update the current conversation messages
+                        setCurrentConversationMessages(prev => [...prev, message]);
+                        // Trigger conversations update
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('conversations-updated'));
+                        }
                       }}
                       messages={currentConversationMessages}
                     />
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Type your message..."
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
-                    />
-                    <Button onClick={handleSendMessage}>
-                      <Send className="h-4 w-4" />
-                    </Button>
                   </div>
                 </>
               ) : (
@@ -3155,6 +3308,41 @@ function MessagingDashboard({
           </Card>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Conversation</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p>
+              Are you sure you want to delete the conversation with{" "}
+              <span className="font-semibold">{conversationToDelete?.name}</span>?
+            </p>
+            <p className="text-sm text-muted-foreground">
+              This action cannot be undone. All messages in this conversation will be permanently deleted.
+            </p>
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setConversationToDelete(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmDeleteConversation}
+              >
+                Delete Conversation
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -5769,6 +5957,25 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
 
   useEffect(() => {
     loadRequirements();
+    
+    // Set up real-time subscription for requirements changes
+    const subscription = supabase
+      .channel('requirements-changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'requirements',
+        filter: `status=eq.active`
+      }, (payload) => {
+        console.log('🔔 [TutorDashboard] Requirements changed:', payload);
+        // Reload requirements when any change occurs
+        loadRequirements();
+      })
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const loadRequirements = async () => {
@@ -5798,7 +6005,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
         console.error("❌ [RequirementsDashboard] Error testing requirements table:", testErr);
       }
 
-      // Get active requirements that match this tutor's profile
+      // Get ONLY active requirements that match this tutor's profile (exclude deleted, cancelled, completed, etc.)
       const { data: requirementsData, error } = await supabase
         .from('requirements')
         .select('*')
@@ -5809,8 +6016,26 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
         console.error("❌ [RequirementsDashboard] Error loading requirements:", error);
         setRequirements([]);
       } else {
-        console.log('📋 [RequirementsDashboard] Raw requirements data:', requirementsData);
-        console.log('📋 [RequirementsDashboard] Total requirements found:', requirementsData?.length || 0);
+        console.log('🔍 [TutorDashboard] Raw requirements data:', requirementsData);
+        console.log('🔍 [TutorDashboard] Total requirements found:', requirementsData?.length || 0);
+        
+        // Debug: Check if any deleted requirements are slipping through
+        if (requirementsData && requirementsData.length > 0) {
+          const statusCounts = requirementsData.reduce((acc: any, req) => {
+            acc[req.status] = (acc[req.status] || 0) + 1;
+            return acc;
+          }, {});
+          console.log('🔍 [TutorDashboard] Requirements by status:', statusCounts);
+          
+          // Check for any non-active statuses and filter them out
+          const nonActiveRequirements = requirementsData.filter(req => req.status !== 'active');
+          if (nonActiveRequirements.length > 0) {
+            console.warn('⚠️ [TutorDashboard] Found non-active requirements, filtering them out:', nonActiveRequirements.map(r => ({ id: r.id, status: r.status, subject: r.subject })));
+            // Filter out non-active requirements for extra safety
+            requirementsData = requirementsData.filter(req => req.status === 'active');
+            console.log('🔍 [TutorDashboard] After filtering, active requirements count:', requirementsData.length);
+          }
+        }
         
         // Fetch student data for each requirement
         let requirementsWithStudents = requirementsData || [];
@@ -5822,11 +6047,12 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
           console.log('📋 [RequirementsDashboard] Student IDs found:', studentIds);
           
           if (studentIds.length > 0) {
-            // Fetch student profiles
+            // Fetch student profiles - STRICT role filtering to prevent mixing
             const { data: studentProfiles, error: studentError } = await supabase
               .from('profiles')
-              .select('user_id, full_name, profile_photo_url, city, area')
-              .in('user_id', studentIds);
+              .select('user_id, full_name, profile_photo_url, city, area, role')
+              .in('user_id', studentIds)
+              .eq('role', 'student'); // STRICT: Only student role, no role mixing
             
             if (!studentError && studentProfiles) {
               console.log('📋 [RequirementsDashboard] Student profiles fetched:', studentProfiles);
@@ -5859,11 +6085,24 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
             .in('requirement_id', requirementsWithStudents.map(r => r.id));
 
           if (!responsesError && responsesData) {
-            // Mark requirements that have responses
-            const requirementsWithResponses = requirementsWithStudents.map(req => ({
+            // Filter out requirements where tutor has declined interest
+            const filteredRequirements = requirementsWithStudents.filter(req => {
+              const response = responsesData.find(resp => resp.requirement_id === req.id);
+              // Hide requirements where tutor has responded negatively
+              if (response && response.status === 'not_interested') {
+                console.log(`🔍 [TutorDashboard] Hiding requirement ${req.subject} due to status: ${response.status}`);
+                return false;
+              }
+              return true;
+            });
+
+            // Mark remaining requirements that have responses
+            const requirementsWithResponses = filteredRequirements.map(req => ({
               ...req,
-              hasResponded: responsesData.some(resp => resp.requirement_id === req.id)
+              hasResponded: responsesData.some(resp => resp.requirement_id === req.id && resp.status === 'interested')
             }));
+            
+            console.log(`🔍 [TutorDashboard] After filtering declined: ${requirementsWithResponses.length} requirements`);
             setRequirements(requirementsWithResponses);
           } else {
             setRequirements(requirementsWithStudents);
@@ -5880,10 +6119,43 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
     }
   };
 
-  const handleRespond = (requirement: any, status: 'interested' | 'not_interested') => {
+  const handleDecline = async (requirement: any) => {
+    try {
+      // Simply remove the declined requirement from the tutor's view immediately
+      // No database updates, no notifications, no student side changes
+      setRequirements(prev => prev.filter(req => req.id !== requirement.id));
+
+      // Close any open dialogs
+      setShowRequirementDetails(false);
+      setSelectedRequirement(null);
+
+      toast({
+        title: "Requirement Declined",
+        description: "The requirement has been declined and removed from your view.",
+      });
+
+    } catch (error) {
+      console.error("Error declining requirement:", error);
+      toast({
+        title: "Error",
+        description: "Failed to decline requirement. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRespond = async (requirement: any, status: 'interested' | 'not_interested') => {
+    if (status === 'not_interested') {
+      // Handle decline immediately without showing dialog
+      await handleDecline(requirement);
+    } else {
+      // Show response dialog for interested status
     setSelectedRequirement(requirement);
     setShowResponseDialog(true);
+    }
   };
+
+
 
   const submitResponse = async () => {
     if (!selectedRequirement) return;
@@ -5892,17 +6164,17 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Update or create the requirement_tutor_matches record
-      const { error: matchError } = await supabase
-        .from('requirement_tutor_matches')
-        .upsert({
-          requirement_id: selectedRequirement.id,
-          tutor_id: user.id,
-          status: 'interested',
-          response_message: responseMessage || null,
-          proposed_rate: proposedRate || null,
-          updated_at: new Date().toISOString()
-        });
+      // Use the improved function to handle requirement-tutor matches
+      const { data: matchResult, error: matchError } = await supabase.rpc(
+        'handle_requirement_tutor_match',
+        {
+          p_requirement_id: selectedRequirement.id,
+          p_tutor_id: user.id,
+          p_status: 'interested',
+          p_response_message: responseMessage || null,
+          p_proposed_rate: proposedRate || null
+        }
+      );
 
       if (matchError) {
         console.error("Error updating requirement match:", matchError);
@@ -5919,11 +6191,8 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
         .from('messages')
         .insert({
           sender_id: user.id,
-          receiver_id: selectedRequirement.student?.id || selectedRequirement.student_id,
-          message: responseMessage || `Hi! I'm interested in your ${selectedRequirement.subject} requirement. I'd love to help you with this.`,
-          message_type: 'requirement_response',
-          related_requirement_id: selectedRequirement.id,
-          created_at: new Date().toISOString()
+          receiver_id: selectedRequirement.student?.user_id || selectedRequirement.student_id,
+          content: responseMessage || `Hi! I'm interested in your ${selectedRequirement.subject} requirement. I'd love to help you with this.`
         });
 
       if (messageError) {
@@ -5940,7 +6209,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
       const { error: notificationError } = await supabase
         .from('notifications')
         .insert({
-          user_id: selectedRequirement.student?.id || selectedRequirement.student_id,
+          user_id: selectedRequirement.student?.user_id || selectedRequirement.student_id,
           type: 'requirement_response',
           title: 'Tutor Response to Your Requirement',
           message: `A tutor has shown interest in your ${selectedRequirement.subject} requirement. Check your messages to continue the conversation.`,
@@ -6009,108 +6278,133 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
 
   return (
     <div className="space-y-6 w-full overflow-hidden">
-      <div className="flex items-center justify-between w-full">
+      <div className="flex items-center justify-between w-full mb-2">
         <div className="flex-1 min-w-0">
-          <h2 className="text-2xl font-bold">Available Requirements</h2>
-          <p className="text-muted-foreground mt-1">
+          <h2 className="text-3xl font-bold text-gray-900 mb-2">Available Requirements</h2>
+          <p className="text-gray-600 text-lg">
             View and respond to student learning requirements that match your profile
           </p>
         </div>
+        <div className="flex gap-2">
         <Button 
-          className="bg-gradient-primary flex-shrink-0"
+            className="bg-gradient-primary flex-shrink-0 shadow-sm hover:shadow-md transition-shadow"
           onClick={() => loadRequirements()}
         >
           <RefreshCw className="h-4 w-4 mr-2" />
           Refresh
         </Button>
+          <Button 
+            variant="outline"
+            className="flex-shrink-0 shadow-sm hover:shadow-md transition-shadow"
+            onClick={() => loadRequirements(true)}
+          >
+            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            Force Sync
+          </Button>
+        </div>
       </div>
 
 
 
       {requirements.length > 0 ? (
-        <div className="flex flex-col gap-6 w-full overflow-hidden" style={{ maxWidth: '100vw', overflowX: 'hidden' }}>
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 w-full">
+          {console.log('🔍 [Render] Rendering requirements:', requirements.map(req => ({
+            id: req.id,
+            subject: req.subject,
+            status: req.status,
+            hasResponded: req.hasResponded,
+            responseStatus: req.responseStatus
+          })))}
           {requirements.map((req, idx) => (
             <Card 
               key={idx} 
-              className="shadow-soft hover:shadow-lg transition-all duration-200 border-l-4 border-l-primary cursor-pointer hover:scale-105 w-full overflow-hidden"
-              style={{ maxWidth: '380px', overflowX: 'hidden' }}
+              className="group hover:shadow-lg transition-all duration-300 border-l-4 border-l-primary cursor-pointer hover:scale-[1.02] bg-white"
               onClick={() => {
                 setSelectedRequirement(req);
                 setShowRequirementDetails(true);
               }}
             >
-              <CardContent className="p-4 w-full overflow-hidden" style={{ maxWidth: '100%', overflowX: 'hidden' }}>
-                {/* Header with Subject and Urgency */}
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1 min-w-0 pr-2 overflow-hidden">
-                    <h3 className="font-semibold text-primary mb-1 text-base capitalize break-words overflow-hidden">{req.subject}</h3>
-                    <p className="text-sm text-muted-foreground capitalize overflow-hidden">{req.category}</p>
-                  </div>
+              <CardContent className="p-6">
+                {/* Header with Subject, Category, and Urgency */}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex-1 min-w-0 pr-3">
+                    <h3 className="font-bold text-lg text-gray-900 mb-1 capitalize line-clamp-1">
+                      {req.subject}
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="text-xs px-2 py-1 bg-blue-50 text-blue-700 border-blue-200">
+                        {req.category}
+                      </Badge>
                   <Badge 
                     variant={req.urgency === 'high' ? 'destructive' : req.urgency === 'normal' ? 'default' : 'secondary'}
-                    className="flex-shrink-0 text-xs px-2 py-1"
+                        className="text-xs px-2 py-1"
                   >
-                    {req.urgency}
+                        {req.urgency === 'high' ? 'High Priority' : req.urgency === 'normal' ? 'Normal' : 'Low Priority'}
                   </Badge>
+                    </div>
+                  </div>
                 </div>
                 
-                {/* Compact Description - Limited to 2 lines with Read More */}
-                <div className="mb-3">
-                  <p className="text-sm text-gray-700 leading-tight break-words" style={{
-                    display: '-webkit-box',
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden'
-                  }}>
+                {/* Description */}
+                <div className="mb-5">
+                  <p className="text-sm text-gray-600 leading-relaxed line-clamp-3 mb-2">
                     {req.description}
                   </p>
                   <button 
-                    className="text-primary text-xs hover:underline mt-1"
+                    className="text-primary text-xs font-medium hover:text-primary/80 transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedRequirement(req);
                       setShowRequirementDetails(true);
                     }}
                   >
-                    Read more...
+                    Read more →
                   </button>
                 </div>
                 
-                {/* Key Details - Optimized for full width */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
-                    <MapPin className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
-                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
-                      <p className="text-xs font-medium text-gray-600">Location</p>
-                      <p className="text-sm text-muted-foreground break-words overflow-hidden">{req.location || 'Not specified'}</p>
+                {/* Key Details Grid */}
+                <div className="grid grid-cols-1 gap-3 mb-5">
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                    <MapPin className="h-4 w-4 text-primary flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Location</p>
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {req.location || 'Not specified'}
+                      </p>
                     </div>
                   </div>
                   
-                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
-                    <Clock className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
-                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
-                      <p className="text-xs font-medium text-gray-600">Preferred Time</p>
-                      <p className="text-sm text-muted-foreground break-words overflow-hidden">{req.preferred_time || 'Not specified'}</p>
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                    <Clock className="h-4 w-4 text-primary flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Preferred Time</p>
+                      <p className="text-sm font-medium text-gray-900 capitalize">
+                        {req.preferred_time || 'Not specified'}
+                      </p>
                     </div>
                   </div>
                   
-                  <div className="flex items-center sm:text-center min-w-0 overflow-hidden">
-                    <IndianRupee className="h-4 w-4 mr-3 sm:mr-0 sm:mx-auto mb-0 sm:mb-1 text-primary flex-shrink-0" />
-                    <div className="sm:text-center min-w-0 flex-1 overflow-hidden">
-                      <p className="text-xs font-medium text-gray-600">Budget Range</p>
-                      <p className="text-sm text-muted-foreground break-words overflow-hidden">₹{req.budget_range || 'Not specified'}</p>
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                    <IndianRupee className="h-4 w-4 text-primary flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Budget Range</p>
+                      <p className="text-sm font-medium text-gray-900">
+                        ₹{req.budget_range || 'Not specified'}
+                      </p>
                     </div>
                   </div>
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-2">
+                <div className="space-y-2">
+                  {console.log(`🔍 [Buttons] Requirement ${req.subject}: hasResponded=${req.hasResponded}, responseStatus=${req.responseStatus}`)}
                   {req.hasResponded ? (
-                    <div className="flex gap-2 w-full">
+                    <>
+                      <div className="flex gap-2">
                       <Button 
                         size="sm" 
                         variant="outline"
-                        className="flex-1 text-sm h-9"
+                          className="flex-1 h-10 text-sm font-medium border-blue-200 text-blue-700 hover:bg-blue-50"
                         onClick={(e) => {
                           e.stopPropagation();
                           console.log('🔍 [View Chat] Requirement data:', req);
@@ -6140,49 +6434,48 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
                           }));
                         }}
                       >
-                        <MessageCircle className="h-4 w-4 mr-1" />
+                          <MessageCircle className="h-4 w-4 mr-2" />
                         View Chat
                       </Button>
                       <Button 
                         size="sm" 
                         variant="outline"
-                        className="flex-1 text-sm h-9"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setState(prev => ({ ...prev, activeTab: "messages" }));
-                        }}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                        Message Sent
-                      </Button>
-                    </div>
+                          className="flex-1 h-10 text-sm font-medium border-green-200 text-green-700 bg-green-50 cursor-default"
+                          disabled
+                        >
+                          <CheckCircle className="h-4 w-4 mr-2" />
+                          Message Sent
+                        </Button>
+                      </div>
+
+                    </>
                   ) : (
-                    <>
+                    <div className="flex gap-2">
                       <Button 
                         size="sm" 
-                        className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm h-9"
+                        className="flex-1 h-10 text-sm font-medium bg-green-600 hover:bg-green-700 text-white shadow-sm"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRespond(req, 'interested');
                         }}
                       >
-                        <Check className="h-4 w-4 mr-1" />
+                        <Check className="h-4 w-4 mr-2" />
                         Show Interest
                       </Button>
                       
                       <Button 
                         size="sm" 
                         variant="outline"
-                        className="flex-1 text-sm h-9"
+                        className="flex-1 h-10 text-sm font-medium border-gray-300 text-gray-700 hover:bg-gray-50"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRespond(req, 'not_interested');
                         }}
                       >
-                        <X className="h-4 w-4 mr-1" />
+                        <X className="h-4 w-4 mr-2" />
                         Decline
                       </Button>
-                    </>
+                    </div>
                   )}
                 </div>
               </CardContent>
@@ -6190,23 +6483,34 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
           ))}
         </div>
       ) : (
-        <Card>
-          <CardContent className="p-8 text-center">
-            <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">No Requirements Available</h3>
-            <p className="text-muted-foreground mb-4">
+        <Card className="border-2 border-dashed border-gray-200 bg-gray-50/50">
+          <CardContent className="p-12 text-center">
+            <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-6">
+              <BookOpen className="h-8 w-8 text-gray-400" />
+            </div>
+            <h3 className="text-xl font-semibold text-gray-900 mb-3">No Requirements Available</h3>
+            <p className="text-gray-600 mb-6 max-w-md mx-auto">
               No student requirements currently match your profile. This could be because:
             </p>
-            <ul className="text-sm text-muted-foreground space-y-1 text-left max-w-md mx-auto">
-              <li>• Your subjects don't match current requirements</li>
-              <li>• Your location doesn't match requirement locations</li>
-              <li>• No active requirements have been posted yet</li>
+            <ul className="text-sm text-gray-500 space-y-2 text-left max-w-md mx-auto mb-8">
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full"></div>
+                Your subjects don't match current requirements
+              </li>
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full"></div>
+                Your location doesn't match requirement locations
+              </li>
+              <li className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full"></div>
+                No active requirements have been posted yet
+              </li>
             </ul>
-            <div className="mt-6">
+            <div className="flex gap-3 justify-center">
               <Button 
                 variant="outline" 
                 onClick={() => loadRequirements()}
-                className="mr-2"
+                className="px-6"
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh
@@ -6214,6 +6518,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
               <Button 
                 variant="outline"
                 onClick={() => setState(prev => ({ ...prev, activeTab: "dashboard" }))}
+                className="px-6"
               >
                 <HomeIcon className="h-4 w-4 mr-2" />
                 Back to Dashboard
@@ -6227,7 +6532,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
       <Dialog open={showResponseDialog} onOpenChange={setShowResponseDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Respond to Requirement</DialogTitle>
+            <DialogTitle>Show Interest in Requirement</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -6257,7 +6562,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
                 className="flex-1" 
                 onClick={submitResponse}
               >
-                Send Response
+                Show Interest
               </Button>
               <Button 
                 variant="outline" 
@@ -6405,6 +6710,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
 // ChatMessages Component for Tutor Dashboard
 function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessages }: { selectedStudent: any; onMessageSent?: (message: any) => void; messages?: any[] }) {
   const [messages, setMessages] = useState<any[]>([]);
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const { toast } = useToast();
@@ -6508,12 +6814,9 @@ function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessag
       // Try to get messages using RPC function first
       try {
         const { data, error } = await supabase.rpc(
-          'get_conversation_messages',
-          { 
-            p_user1_id: user.id, 
-            p_user2_id: selectedStudent.id,
-            p_limit: 50
-          }
+          'get_messages_between_users_new',
+          user.id,
+          selectedStudent.id
         );
 
         if (error) {
@@ -6568,11 +6871,9 @@ function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessag
 
       // Mark messages from student as read
       await supabase.rpc(
-        'mark_messages_as_read',
-        { 
-          p_sender_id: selectedStudent.id, 
-          p_receiver_id: user.id 
-        }
+        'mark_messages_as_read_between_users_new',
+        user.id,
+        selectedStudent.id
       );
 
       // Clear notifications for this conversation
@@ -6583,13 +6884,100 @@ function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessag
         .eq('type', 'message')
         .eq('data->sender_id', selectedStudent.id);
 
-      // Update conversations list to reflect read status
-      // This will trigger a refresh of the conversations list
+      // Immediately update local unread count to 0 when messages are marked as read
+      const unreadFromThisStudent = messages.filter(msg => 
+        msg.sender_id === selectedStudent.id && !msg.read
+      ).length;
+      
+      // Update parent component's unread count
       if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('unread-count-updated', { 
+          detail: { decrease: unreadFromThisStudent } 
+        }));
         window.dispatchEvent(new CustomEvent('conversations-updated'));
       }
+
+      // Update local messages to mark them as read
+      setMessages(prev => prev.map(msg => 
+        msg.sender_id === selectedStudent.id ? { ...msg, read: true } : msg
+      ));
+
     } catch (error) {
       console.error("Error marking messages as read:", error);
+    }
+  };
+
+  const handleSendMessage = async (messageContent: string) => {
+    if (!messageContent.trim() || !selectedStudent || !currentUserId) return;
+    
+    try {
+      // Create optimistic message for instant display
+      const optimisticMessage = {
+        id: `temp-${Date.now()}`,
+        sender_id: currentUserId,
+        receiver_id: selectedStudent.id,
+        content: messageContent.trim(),
+        created_at: new Date().toISOString(),
+        read: false
+      };
+
+      // Add message to local state immediately for instant display
+      setMessages(prev => [...prev, optimisticMessage]);
+
+      // Insert the message into the database
+      const { data: newMessage, error } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: currentUserId,
+          receiver_id: selectedStudent.id,
+          content: messageContent.trim()
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Replace optimistic message with real message from database
+      if (newMessage) {
+        setMessages(prev => prev.map(msg => 
+          msg.id === optimisticMessage.id ? newMessage : msg
+        ));
+        
+        // Notify parent component
+        if (onMessageSent) {
+          onMessageSent(newMessage);
+        }
+      }
+
+      // Create a notification for the student (best-effort)
+      try {
+        const { data: senderProfile } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('user_id', currentUserId)
+          .single();
+
+        await supabase.rpc('create_notification', {
+          p_user_id: selectedStudent.id,
+          p_title: 'New Message',
+          p_message: `You have a new message from ${senderProfile?.full_name || 'a tutor'}.`,
+          p_type: 'message',
+          p_data: { sender_id: currentUserId } as any
+        });
+      } catch (notifyErr) {
+        console.warn('Notification creation failed (message sent ok):', notifyErr);
+      }
+
+    } catch (error: any) {
+      console.error("Error sending message:", error);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to send message. Please try again.",
+        variant: "destructive",
+      });
+      
+      // Remove optimistic message on error
+      setMessages(prev => prev.filter(msg => msg.id !== `temp-${Date.now()}`));
     }
   };
 
@@ -6624,6 +7012,32 @@ function ChatMessages({ selectedStudent, onMessageSent, messages: externalMessag
           No messages yet. Start the conversation!
         </div>
       )}
+      
+      {/* Message Input */}
+      <div className="flex gap-2 pt-4 border-t">
+        <Input
+          placeholder="Type your message..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyPress={(e) => {
+            if (e.key === "Enter" && message.trim()) {
+              handleSendMessage(message);
+              setMessage(""); // Clear input immediately
+            }
+          }}
+        />
+        <Button 
+          onClick={() => {
+            if (message.trim()) {
+              handleSendMessage(message);
+              setMessage(""); // Clear input immediately
+            }
+          }} 
+          disabled={!message.trim()}
+        >
+          <Send className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }

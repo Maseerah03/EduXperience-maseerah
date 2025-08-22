@@ -1946,7 +1946,14 @@ function DashboardHome({
         <Button 
           size="lg" 
           className="bg-secondary text-secondary-foreground flex flex-col items-center justify-center gap-2 h-28"
-          onClick={() => setState(prev => ({ ...prev, showRequirementModal: true }))}
+          onClick={() => {
+            console.log('🔍 [Post Requirement] Button clicked!');
+            console.log('🔍 [Post Requirement] Current state:', state);
+            setState(prev => {
+              console.log('🔍 [Post Requirement] Setting showRequirementModal to true');
+              return { ...prev, showRequirementModal: true };
+            });
+          }}
         >
           <List className="h-6 w-6" />
           Post Requirement
