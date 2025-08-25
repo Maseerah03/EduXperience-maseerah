@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { RequirementEditModal } from "@/components/RequirementEditModal";
+import StudentCourses from "@/components/StudentCourses";
+import MyClasses from "@/components/MyClasses";
+import SessionBooking from "@/components/SessionBooking";
 import { getPendingStudentProfile, clearPendingStudentProfile } from "@/lib/profile-creation";
 import {
   SidebarProvider,
@@ -69,6 +72,7 @@ import {
   Info,
   Tag,
   Trash2,
+  GraduationCap,
 } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -101,6 +105,7 @@ export default function StudentDashboard() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0); // unread messages count
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [enrolledCoursesCount, setEnrolledCoursesCount] = useState(0);
   const [state, setState] = useState<DashboardState>({
     activeTab: "dashboard",
     showProfileDialog: false,
@@ -268,6 +273,9 @@ export default function StudentDashboard() {
       // Load message notifications
       await loadNotifications();
       
+      // Load enrolled courses count
+      await loadEnrolledCoursesCount(userId);
+      
       // Set up real-time subscription for requirements changes
       const cleanup = setupRequirementsSubscription();
       
@@ -334,6 +342,23 @@ export default function StudentDashboard() {
     return () => {
       supabase.removeChannel(requirementsChannel);
     };
+  };
+
+  // Load enrolled courses count for the student
+  const loadEnrolledCoursesCount = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('course_enrollments')
+        .select('id', { count: 'exact' })
+        .eq('student_id', userId)
+        .eq('status', 'enrolled');
+
+      if (!error && data !== null) {
+        setEnrolledCoursesCount(data.length);
+      }
+    } catch (error) {
+      console.error('Error loading enrolled courses count:', error);
+    }
   };
 
   // Load notifications of type 'message' for the student
@@ -1554,10 +1579,12 @@ export default function StudentDashboard() {
   }
 
   const navMenu = [
-    { label: "Dashboard", icon: <HomeIcon />, id: "dashboard" },
-    { label: "Find Tutors", icon: <Search />, id: "tutors" },
-    { label: "My Requirements", icon: <List />, id: "requirements" },
-    { label: "My Classes", icon: <Calendar />, id: "classes" },
+          { label: "Dashboard", icon: <HomeIcon />, id: "dashboard" },
+      { label: "Courses", icon: <BookOpen />, id: "courses" },
+      { label: "My Classes", icon: <GraduationCap />, id: "my-classes" },
+      { label: "Book Sessions", icon: <Calendar />, id: "book-sessions" },
+      { label: "Find Tutors", icon: <Search />, id: "tutors" },
+          { label: "My Requirements", icon: <List />, id: "requirements" },
     { label: "Messages", icon: <MessageCircle />, id: "messages", badge: unreadCount > 0 ? unreadCount : undefined },
     { label: "Help & Support", icon: <HelpCircle />, id: "help" },
   ];
@@ -1612,11 +1639,35 @@ export default function StudentDashboard() {
                 studentProfile={studentProfile}
                 tutors={tutors}
                 unreadCount={unreadCount}
+                enrolledCoursesCount={enrolledCoursesCount}
+                setState={setState}
                 onViewProfile={() => setState(prev => ({ ...prev, showProfileDialog: true }))}
                 onFindTutors={() => setState(prev => ({ ...prev, activeTab: "tutors" }))}
                 onViewMessages={() => setState(prev => ({ ...prev, activeTab: "messages" }))}
                 onOpenChatWithTutor={openChatWithTutor}
               />
+            )}
+
+            {state.activeTab === "courses" && (
+              <StudentCourses onEnrollSuccess={() => {
+                // Refresh any relevant data after successful enrollment
+                toast({
+                  title: "Enrollment Successful",
+                  description: "You can now view your enrolled courses in the My Classes tab.",
+                });
+                // Refresh enrolled courses count
+                if (user) {
+                  loadEnrolledCoursesCount(user.id);
+                }
+              }} />
+            )}
+
+            {state.activeTab === "my-classes" && (
+              <MyClasses />
+            )}
+
+            {state.activeTab === "book-sessions" && (
+              <SessionBooking />
             )}
 
             {state.activeTab === "tutors" && (
@@ -1686,6 +1737,8 @@ function DashboardHome({
   studentProfile, 
   tutors, 
   unreadCount,
+  enrolledCoursesCount,
+  setState,
   onViewProfile, 
   onFindTutors, 
   onViewMessages, 
@@ -1695,6 +1748,8 @@ function DashboardHome({
   studentProfile: StudentProfile | null;
   tutors: TutorProfile[];
   unreadCount: number;
+  enrolledCoursesCount: number;
+  setState: React.Dispatch<React.SetStateAction<DashboardState>>;
   onViewProfile: () => void;
   onFindTutors: () => void;
   onViewMessages: () => void;
@@ -1741,17 +1796,28 @@ function DashboardHome({
       //   .limit(2);
 
       // 3. Fetch recent messages (already handled by notifications, but adding here for completeness)
-      const { data: messageData } = await supabase
+      const { data: messagesData } = await supabase
         .from('messages')
-        .select(`
-          id,
-          content,
-          created_at,
-          sender:profiles!messages_sender_id_fkey(full_name, profile_photo_url)
-        `)
+        .select('id, content, created_at, sender_id')
         .eq('receiver_id', user.id)
         .order('created_at', { ascending: false })
         .limit(2);
+
+      // Get sender profiles for messages
+      const messageData = await Promise.all(
+        (messagesData || []).map(async (msg) => {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('full_name, profile_photo_url')
+            .eq('id', msg.sender_id)
+            .single();
+
+          return {
+            ...msg,
+            profiles: profileData
+          };
+        })
+      );
 
       if (messageData && messageData.length > 0) {
         messageData.forEach(msg => {
@@ -1759,7 +1825,7 @@ function DashboardHome({
             id: `message_${msg.id}`,
             type: 'message',
             title: 'New Message',
-            description: `Message from ${msg.sender?.full_name || 'Tutor'}: ${msg.content.substring(0, 50)}${msg.content.length > 50 ? '...' : ''}`,
+            description: `Message from ${msg.profiles?.full_name || 'Tutor'}: ${msg.content.substring(0, 50)}${msg.content.length > 50 ? '...' : ''}`,
             timestamp: msg.created_at,
             icon: <MessageCircle className="h-4 w-4 text-accent" />,
             color: 'text-accent',
@@ -1831,21 +1897,46 @@ function DashboardHome({
           });
         }
       } catch (learningTableError) {
-        console.log('Learning records table not available, using placeholder data');
+        console.log('Learning records table not available yet, using placeholder data');
+        // Add placeholder data for demonstration
+        progressData.push({
+          subject: 'Mathematics',
+          totalClasses: 0,
+          completedClasses: 0,
+          progress: 0,
+          nextClass: null,
+          tutor: 'No tutor assigned yet'
+        });
       }
 
       // 2. Fetch upcoming classes from classes table
       try {
         const { data: upcomingClasses, error: classesError } = await supabase
           .from('classes')
-          .select(`
-            *,
-            tutor:profiles!classes_tutor_id_fkey(full_name, profile_photo_url)
-          `)
+          .select('*')
           .eq('student_id', user.id)
           .gte('start_time', new Date().toISOString())
           .order('start_time', { ascending: true })
           .limit(5);
+
+        // Get tutor profiles for classes
+        if (!classesError && upcomingClasses && upcomingClasses.length > 0) {
+          const classesWithTutors = await Promise.all(
+            upcomingClasses.map(async (classItem) => {
+              const { data: profileData } = await supabase
+                .from('profiles')
+                .select('full_name, profile_photo_url')
+                .eq('id', classItem.tutor_id)
+                .single();
+
+              return {
+                ...classItem,
+                profiles: profileData
+              };
+            })
+          );
+          upcomingClasses.splice(0, upcomingClasses.length, ...classesWithTutors);
+        }
 
         if (!classesError && upcomingClasses && upcomingClasses.length > 0) {
           // Add upcoming classes to progress data
@@ -1854,7 +1945,7 @@ function DashboardHome({
             if (existingSubject) {
               existingSubject.nextClass = {
                 time: classItem.start_time,
-                tutor: classItem.tutor?.full_name || 'Tutor',
+                tutor: classItem.profiles?.full_name || 'Tutor',
                 duration: classItem.duration || 60
               };
             } else {
@@ -1866,10 +1957,10 @@ function DashboardHome({
                 progress: 0,
                 nextClass: {
                   time: classItem.start_time,
-                  tutor: classItem.tutor?.full_name || 'Tutor',
+                  tutor: classItem.profiles?.full_name || 'Tutor',
                   duration: classItem.duration || 60
                 },
-                tutor: classItem.tutor?.full_name || 'Tutor'
+                tutor: classItem.profiles?.full_name || 'Tutor'
               });
             }
           });
@@ -1958,9 +2049,18 @@ function DashboardHome({
           <List className="h-6 w-6" />
           Post Requirement
         </Button>
-        <Button size="lg" className="bg-accent text-accent-foreground flex flex-col items-center justify-center gap-2 h-28">
-          <Calendar className="h-6 w-6" />
+        <Button 
+          size="lg" 
+          className="bg-accent text-accent-foreground flex flex-col items-center justify-center gap-2 h-28 relative"
+          onClick={() => window.location.href = '#my-classes'}
+        >
+          <GraduationCap className="h-6 w-6" />
           My Classes
+          {enrolledCoursesCount > 0 && (
+            <div className="absolute -top-2 -right-2 bg-green-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold">
+              {enrolledCoursesCount > 99 ? '99+' : enrolledCoursesCount}
+            </div>
+          )}
         </Button>
         <Button size="lg" className="bg-muted text-foreground flex flex-col items-center justify-center gap-2 h-28 relative" onClick={onViewMessages}>
           <MessageCircle className="h-6 w-6" />
@@ -2105,6 +2205,67 @@ function DashboardHome({
           </div>
         </section>
       )}
+
+                {/* Available Courses */}
+          <section>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-semibold">Available Courses</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Discover structured courses from qualified tutors
+                </p>
+              </div>
+              <Button 
+                variant="link" 
+                className="text-primary flex items-center gap-1 p-0 h-auto"
+                onClick={() => window.location.href = '#courses'}
+              >
+                Browse All Courses <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* My Classes Quick Access */}
+            <div className="flex items-center justify-between mb-4 mt-6">
+              <div>
+                <h3 className="text-xl font-semibold">My Classes</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Track your enrolled courses and learning progress
+                </p>
+              </div>
+              <Button 
+                variant="link" 
+                className="text-primary flex items-center gap-1 p-0 h-auto"
+                onClick={() => window.location.href = '#my-classes'}
+              >
+                View My Classes <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+        
+        <div className="flex justify-center">
+          {/* Course Discovery Card */}
+          <Card className="shadow-soft hover:shadow-medium transition-shadow border-dashed border-2 border-gray-300 max-w-md">
+            <CardContent className="p-6">
+              <div className="text-center py-4">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <BookOpen className="h-8 w-8 text-blue-600" />
+                </div>
+                <h4 className="font-semibold text-gray-900 mb-2">Explore Courses</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  Find structured learning paths in your favorite subjects
+                </p>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setState(prev => ({ ...prev, activeTab: 'courses' }))}
+                >
+                  <BookOpen className="h-4 w-4 mr-2" />
+                  Browse Courses
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
 
       {/* Learning Progress */}
       <section>

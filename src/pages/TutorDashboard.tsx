@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import VerificationStatus from "@/components/verification/VerificationStatus";
+import CourseManagement from "@/components/CourseManagement";
 
 import { getPendingTutorProfile, clearPendingTutorProfile } from "@/lib/profile-creation";
 import {
@@ -62,9 +63,10 @@ import {
   Shield,
   RefreshCw,
   IndianRupee,
+  AlertCircle,
 } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
-import type { User } from "@supabase/supabase-js";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 type TutorProfile = Tables<"tutor_profiles">;
 type Profile = Tables<"profiles">;
@@ -84,7 +86,7 @@ export default function TutorDashboard() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SupabaseUser | null>(null);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
   const [tutorProfile, setTutorProfile] = useState<TutorProfile | null>(null);
   const [students, setStudents] = useState<any[]>([]);
@@ -92,6 +94,7 @@ export default function TutorDashboard() {
   const [unreadCount, setUnreadCount] = useState(0); // number of unread messages for this tutor
   const [requirements, setRequirements] = useState<any[]>([]);
   const [requirementsLoading, setRequirementsLoading] = useState(false);
+  const [courses, setCourses] = useState<any[]>([]);
   const [state, setState] = useState<DashboardState>({
     activeTab: "dashboard",
     showProfileDialog: false,
@@ -229,6 +232,13 @@ export default function TutorDashboard() {
 
       // Load students (tutor's students)
       await loadStudents();
+      
+      // Load courses
+      await loadCourses();
+      
+      // Load counts for dashboard
+      await loadEnrolledStudentsCount();
+      await loadUpcomingSessionsCount();
     } catch (error) {
       console.error("Error loading user data:", error);
     }
@@ -240,6 +250,94 @@ export default function TutorDashboard() {
     
     await supabase.auth.signOut();
     navigate("/");
+  };
+
+  const loadCourses = async () => {
+    try {
+      if (!user) return;
+
+      const { data, error } = await supabase
+        .from('courses')
+        .select('*')
+        .eq('tutor_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(10); // Increased limit to show more courses including completed/cancelled
+
+      if (error) {
+        console.error('Error loading courses:', error);
+        setCourses([]);
+      } else {
+        setCourses(data || []);
+      }
+    } catch (error) {
+      console.error("Error loading courses:", error);
+      setCourses([]);
+    }
+  };
+
+  const refreshCourses = async () => {
+    await loadCourses();
+  };
+
+  const loadEnrolledStudentsCount = async () => {
+    try {
+      if (!user) return;
+
+      // Step 1: Get all courses for this tutor
+      const { data: tutorCourses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id')
+        .eq('tutor_id', user.id)
+        .eq('is_active', true);
+
+      if (coursesError || !tutorCourses || tutorCourses.length === 0) {
+        setEnrolledStudentsCount(0);
+        return;
+      }
+
+      const courseIds = tutorCourses.map(course => course.id);
+
+      // Step 2: Count enrollments for these courses
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('student_id')
+        .in('course_id', courseIds)
+        .eq('status', 'enrolled');
+
+      if (!enrollmentsError && enrollments !== null) {
+        // Get unique student count (in case a student is enrolled in multiple courses)
+        const uniqueStudents = new Set(enrollments.map(e => e.student_id));
+        setEnrolledStudentsCount(uniqueStudents.size);
+      } else {
+        setEnrolledStudentsCount(0);
+      }
+    } catch (error) {
+      console.error('Error loading enrolled students count:', error);
+      setEnrolledStudentsCount(0);
+    }
+  };
+
+  const loadUpcomingSessionsCount = async () => {
+    try {
+      if (!user) return;
+
+      // Count upcoming courses for this tutor (using course start_time)
+      const { data: courses, error } = await supabase
+        .from('courses' as any)
+        .select('id', { count: 'exact' })
+        .eq('tutor_id', user.id)
+        .eq('is_active', true)
+        .gte('start_time', new Date().toISOString());
+
+      if (!error && courses !== null) {
+        setUpcomingSessionsCount(courses.length);
+      } else {
+        setUpcomingSessionsCount(0);
+      }
+    } catch (error) {
+      console.error('Error loading upcoming sessions count:', error);
+      setUpcomingSessionsCount(0);
+    }
   };
 
   const loadStudents = async () => {
@@ -1174,6 +1272,7 @@ export default function TutorDashboard() {
 
   const navMenu = [
     { label: "Dashboard", icon: <HomeIcon />, id: "dashboard" },
+    { label: "Courses", icon: <BookOpen />, id: "courses" },
     { label: "Requirements", icon: <BookOpen />, id: "requirements", badge: notifications.filter(n => n.type === 'new_requirement' && !n.is_read).length > 0 ? notifications.filter(n => n.type === 'new_requirement' && !n.is_read).length : undefined },
     { label: "Students", icon: <Users />, id: "students" },
     { label: "Schedule", icon: <Calendar />, id: "schedule" },
@@ -1230,8 +1329,10 @@ export default function TutorDashboard() {
                 userProfile={userProfile}
                 tutorProfile={tutorProfile}
                 students={students}
+                courses={courses}
                 onViewProfile={handleViewProfile}
                 onViewStudents={() => setState(prev => ({ ...prev, activeTab: "students" }))}
+                onViewSchedule={() => setState(prev => ({ ...prev, activeTab: "schedule" }))}
                 onViewMessages={() => setState(prev => ({ ...prev, activeTab: "messages" }))}
                 onOpenChatWithStudent={openChatWithStudent}
               />
@@ -1253,6 +1354,19 @@ export default function TutorDashboard() {
               />
             )}
 
+            {state.activeTab === "courses" && (
+              <CourseManagement onRefresh={() => {
+                refreshCourses();
+                // Also refresh students count and trigger students refresh
+                loadEnrolledStudentsCount();
+                loadUpcomingSessionsCount();
+                setTimeout(() => {
+                  const event = new CustomEvent('refresh-students');
+                  window.dispatchEvent(event);
+                }, 100);
+              }} />
+            )}
+
             {state.activeTab === "requirements" && (
               <RequirementsDashboard 
                 onRefresh={() => loadNotifications()}
@@ -1263,7 +1377,7 @@ export default function TutorDashboard() {
             )}
 
             {state.activeTab === "schedule" && (
-              <ScheduleDashboard tutorProfile={tutorProfile} />
+              <ScheduleDashboard tutorProfile={tutorProfile} toast={toast} onRefresh={refreshCourses} />
             )}
 
             {state.activeTab === "earnings" && (
@@ -1322,16 +1436,20 @@ function DashboardHome({
   userProfile, 
   tutorProfile, 
   students, 
+  courses,
   onViewProfile, 
   onViewStudents, 
+  onViewSchedule,
   onViewMessages, 
   onOpenChatWithStudent
 }: {
   userProfile: Profile | null;
   tutorProfile: TutorProfile | null;
   students: any[];
+  courses: any[];
   onViewProfile: () => void;
   onViewStudents: () => void;
+  onViewSchedule: () => void;
   onViewMessages: () => void;
   onOpenChatWithStudent: (studentUserId: string) => void;
 }) {
@@ -1397,6 +1515,8 @@ function DashboardHome({
     }
   };
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [enrolledStudentsCount, setEnrolledStudentsCount] = useState(0);
+  const [upcomingSessionsCount, setUpcomingSessionsCount] = useState(0);
   const [earnings, setEarnings] = useState({
     thisMonth: 0,
     lastMonth: 0,
@@ -1410,6 +1530,8 @@ function DashboardHome({
     // Load recent activity from database
     loadRecentActivity();
     loadEarnings();
+    loadEnrolledStudentsCount();
+    loadUpcomingSessionsCount();
     // Calculate response time based on actual message data
     calculateResponseTime();
   }, []);
@@ -1424,6 +1546,69 @@ function DashboardHome({
     }
   };
 
+  const loadEnrolledStudentsCount = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Step 1: Get all courses for this tutor
+      const { data: tutorCourses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id')
+        .eq('tutor_id', user.id)
+        .eq('is_active', true);
+
+      if (coursesError || !tutorCourses || tutorCourses.length === 0) {
+        setEnrolledStudentsCount(0);
+        return;
+      }
+
+      const courseIds = tutorCourses.map(course => course.id);
+
+      // Step 2: Count enrollments for these courses
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('student_id')
+        .in('course_id', courseIds)
+        .eq('status', 'enrolled');
+
+      if (!enrollmentsError && enrollments !== null) {
+        // Get unique student count (in case a student is enrolled in multiple courses)
+        const uniqueStudents = new Set(enrollments.map(e => e.student_id));
+        setEnrolledStudentsCount(uniqueStudents.size);
+      } else {
+        setEnrolledStudentsCount(0);
+      }
+    } catch (error) {
+      console.error('Error loading enrolled students count:', error);
+      setEnrolledStudentsCount(0);
+    }
+  };
+
+  const loadUpcomingSessionsCount = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Count upcoming classes for this tutor
+      const { data: classes, error } = await supabase
+        .from('classes' as any)
+        .select('id', { count: 'exact' })
+        .eq('tutor_id', user.id)
+        .gte('start_time', new Date().toISOString())
+        .in('status', ['scheduled', 'in_progress']);
+
+      if (!error && classes !== null) {
+        setUpcomingSessionsCount(classes.length);
+      } else {
+        setUpcomingSessionsCount(0);
+      }
+    } catch (error) {
+      console.error('Error loading upcoming sessions count:', error);
+      setUpcomingSessionsCount(0);
+    }
+  };
+
   const loadEarnings = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -1434,7 +1619,7 @@ function DashboardHome({
       setEarnings({
         thisMonth: 0, // TODO: Fetch from earnings table
         lastMonth: 0, // TODO: Fetch from earnings table
-        totalStudents: students.length,
+        totalStudents: enrolledStudentsCount,
         totalClasses: 0, // TODO: Fetch from classes table
         successRate: '0%', // TODO: Calculate from completed vs total classes
         averageRating: tutorProfile?.rating || 0,
@@ -1445,7 +1630,7 @@ function DashboardHome({
       setEarnings({
         thisMonth: 0,
         lastMonth: 0,
-        totalStudents: students.length,
+        totalStudents: enrolledStudentsCount,
         totalClasses: 0,
         successRate: '0%',
         averageRating: tutorProfile?.rating || 0,
@@ -1697,11 +1882,24 @@ function DashboardHome({
           <CardContent className="p-6">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-accent/10 rounded-lg">
+                <BookOpen className="h-6 w-6 text-accent" />
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Total Courses</p>
+                <p className="text-2xl font-bold">{courses.length}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-accent/10 rounded-lg">
                 <Calendar className="h-6 w-6 text-accent" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Classes This Week</p>
-                <p className="text-2xl font-bold">{earnings.totalClasses || 0}</p>
+                <p className="text-sm text-muted-foreground">Upcoming Sessions</p>
+                <p className="text-2xl font-bold">{upcomingSessionsCount}</p>
               </div>
             </div>
           </CardContent>
@@ -2141,6 +2339,81 @@ function DashboardHome({
             <p className="text-sm text-gray-400">Start teaching to receive your first review!</p>
           </div>
         )}
+      </section>
+
+      {/* Courses Overview */}
+      <section>
+        <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+          <BookOpen className="h-5 w-5 text-blue-600" />
+          Your Courses
+        </h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Create New Course Card */}
+          <Card className="shadow-soft hover:shadow-medium transition-shadow border-dashed border-2 border-gray-300">
+            <CardContent className="p-6">
+              <div className="text-center py-6">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <Plus className="h-8 w-8 text-blue-600" />
+                </div>
+                <h4 className="font-semibold text-gray-900 mb-2">Create New Course</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  Start a new course to attract more students
+                </p>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setState(prev => ({ ...prev, activeTab: "courses" }))}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Course
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* View All Courses Card */}
+          <Card className="shadow-soft hover:shadow-medium transition-shadow">
+            <CardContent className="p-6">
+              <div className="text-center py-6">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <BookOpen className="h-8 w-8 text-green-600" />
+                </div>
+                <h4 className="font-semibold text-gray-900 mb-2">Manage Courses</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  View and edit your existing courses
+                </p>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setState(prev => ({ ...prev, activeTab: "courses" }))}
+                >
+                  <BookOpen className="h-4 w-4 mr-2" />
+                  View Courses
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Course Analytics Card */}
+          <Card className="shadow-soft hover:shadow-medium transition-shadow">
+            <CardContent className="p-6">
+              <div className="text-center py-6">
+                <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <BarChart3 className="h-8 w-8 text-purple-600" />
+                </div>
+                <h4 className="font-semibold text-gray-900 mb-2">Course Analytics</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  Track performance and student engagement
+                </p>
+                <Button variant="outline" size="sm">
+                  <BarChart3 className="h-4 w-4 mr-2" />
+                  View Analytics
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </section>
 
       {/* Sample Content & Teaching Materials */}
@@ -2713,7 +2986,7 @@ function DashboardHome({
           <Users className="h-6 w-6" />
           My Students
         </Button>
-        <Button size="lg" className="bg-secondary text-secondary-foreground flex flex-col items-center justify-center gap-2 h-28">
+        <Button size="lg" className="bg-secondary text-secondary-foreground flex flex-col items-center justify-center gap-2 h-28" onClick={onViewSchedule}>
           <Calendar className="h-6 w-6" />
           Schedule
         </Button>
@@ -2891,78 +3164,586 @@ function StudentManagement({
   students: any[];
   onSelectStudent: (student: any) => void;
 }) {
+  const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState("");
+  const [enrolledStudents, setEnrolledStudents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedStudentDetails, setSelectedStudentDetails] = useState<any | null>(null);
+  const [showStudentDetails, setShowStudentDetails] = useState(false);
+  const [showMessaging, setShowMessaging] = useState(false);
+  const [currentConversation, setCurrentConversation] = useState<any[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const filteredStudents = students.filter(student =>
-    student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.subject.toLowerCase().includes(searchTerm.toLowerCase())
+  useEffect(() => {
+    loadEnrolledStudents();
+    
+    // Listen for refresh events from other components
+    const handleRefresh = () => {
+      loadEnrolledStudents();
+    };
+    
+    window.addEventListener('refresh-students', handleRefresh);
+    
+    return () => {
+      window.removeEventListener('refresh-students', handleRefresh);
+    };
+  }, []);
+
+  // Refresh when component becomes visible (tab is selected)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        loadEnrolledStudents();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Get current user on component mount
+  useEffect(() => {
+    const getCurrentUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUserId(user.id);
+      }
+    };
+    getCurrentUser();
+  }, []);
+
+  // Set up real-time subscription for messages when messaging is open
+  useEffect(() => {
+    if (!showMessaging || !currentUserId || !selectedStudentDetails) return;
+
+    // Simplified subscription - listen to all message inserts and filter in the callback
+    const subscription = supabase
+      .channel(`messages-${currentUserId}-${selectedStudentDetails.student_id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages'
+      }, (payload) => {
+        console.log('🔔 [StudentManagement] New message received:', payload);
+        
+        // Filter messages for this conversation only
+        if (payload.new && 
+            ((payload.new.sender_id === currentUserId && payload.new.receiver_id === selectedStudentDetails.student_id) ||
+             (payload.new.sender_id === selectedStudentDetails.student_id && payload.new.receiver_id === currentUserId))) {
+          setCurrentConversation(prev => [...prev, payload.new]);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [showMessaging, currentUserId, selectedStudentDetails]);
+
+  const loadEnrolledStudents = async () => {
+    try {
+      setLoading(true);
+      
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Step 1: Get all courses for this tutor
+      const { data: tutorCourses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id, title, description, subject, level, duration_hours')
+        .eq('tutor_id', user.id)
+        .eq('is_active', true);
+
+      if (coursesError) {
+        console.error('Error loading tutor courses:', coursesError);
+        return;
+      }
+
+      if (!tutorCourses || tutorCourses.length === 0) {
+        setEnrolledStudents([]);
+        setLoading(false);
+        return;
+      }
+
+      const courseIds = tutorCourses.map(course => course.id);
+
+      // Step 2: Get enrollments for these courses
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('*')
+        .in('course_id', courseIds)
+        .order('enrolled_at', { ascending: false });
+
+      if (enrollmentsError) {
+        console.error('Error loading enrollments:', enrollmentsError);
+        return;
+      }
+
+      if (!enrollments || enrollments.length === 0) {
+        setEnrolledStudents([]);
+        setLoading(false);
+        return;
+      }
+
+      console.log('Raw enrollments data:', enrollments);
+      console.log('Course IDs:', courseIds);
+
+      // Step 3: Fetch student profiles and combine with course data
+      const studentsWithDetails = await Promise.all(
+        enrollments.map(async (enrollment) => {
+          console.log('Processing enrollment:', enrollment);
+          
+          // Get student profile information using user_id
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles' as any)
+            .select('full_name, profile_photo_url, city, area')
+            .eq('user_id', enrollment.student_id)
+            .single();
+
+          if (profileError) {
+            console.error('Error fetching profile for student_id:', enrollment.student_id, profileError);
+          }
+
+          // Find the corresponding course
+          const course = tutorCourses.find(c => c.id === enrollment.course_id);
+
+          const result = {
+            ...enrollment,
+            course: course || {
+              title: 'Unknown Course',
+              description: 'Course not found',
+              subject: 'Unknown',
+              level: 'Unknown',
+              duration_hours: 0
+            },
+            student_profile: profileData || {
+              full_name: 'Unknown Student',
+              profile_photo_url: '',
+              city: '',
+              area: ''
+            }
+          };
+
+          console.log('Processed enrollment result:', result);
+          return result;
+        })
+      );
+
+      setEnrolledStudents(studentsWithDetails);
+    } catch (error) {
+      console.error('Error loading enrolled students:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshStudents = async () => {
+    setRefreshing(true);
+    await loadEnrolledStudents();
+    setRefreshing(false);
+  };
+
+  const handleViewStudentDetails = async (enrollment: any) => {
+    try {
+      console.log('Opening student details for enrollment:', enrollment);
+      
+      if (!enrollment.student_id) {
+        console.error('No student_id found in enrollment:', enrollment);
+        toast({
+          title: "Error loading student details",
+          description: "Student information is incomplete. Please refresh and try again.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      // Fetch complete student profile information using user_id
+      const { data: studentProfile, error } = await supabase
+        .from('profiles' as any)
+        .select('*')
+        .eq('user_id', enrollment.student_id)
+        .single();
+
+      if (error) {
+        console.error('Error fetching student profile:', error);
+        // Show error toast and return early
+        toast({
+          title: "Error loading student details",
+          description: "Failed to load student profile. Please try again.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      console.log('Student profile loaded:', studentProfile);
+
+      // Fetch student profile details if available
+      let studentDetails = null;
+      try {
+        const { data: studentProfileData } = await supabase
+          .from('student_profiles' as any)
+          .select('*')
+          .eq('user_id', enrollment.student_id)
+          .single();
+        
+        if (studentProfileData) {
+          studentDetails = studentProfileData;
+          console.log('Additional student details loaded:', studentDetails);
+        }
+      } catch (err) {
+        // Student profile might not exist, that's okay
+        console.log('No additional student profile details found');
+      }
+
+      setSelectedStudentDetails({
+        ...enrollment,
+        complete_profile: studentProfile,
+        student_details: studentDetails
+      });
+      setShowStudentDetails(true);
+    } catch (error) {
+      console.error('Error loading student details:', error);
+      toast({
+        title: "Error loading student details",
+        description: "An unexpected error occurred. Please try again.",
+        variant: "destructive",
+        duration: 5000,
+      });
+    }
+  };
+
+  const handleOpenMessaging = async (enrollment: any) => {
+    try {
+      // Load conversation history using user IDs
+      const { data: messages, error } = await supabase
+        .from('messages' as any)
+        .select('*')
+        .or(`and(sender_id.eq.${currentUserId},receiver_id.eq.${enrollment.student_id}),and(sender_id.eq.${enrollment.student_id},receiver_id.eq.${currentUserId})`)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading messages:', error);
+        return;
+      }
+
+      setCurrentConversation(messages || []);
+      setSelectedStudentDetails(enrollment);
+      setShowMessaging(true);
+
+      // Mark unread messages as read
+      if (messages && messages.length > 0) {
+        const unreadMessages = messages.filter(
+          msg => msg.receiver_id === currentUserId && !msg.is_read
+        );
+        
+        if (unreadMessages.length > 0) {
+          const messageIds = unreadMessages.map(msg => msg.id);
+          await supabase
+            .from('messages' as any)
+            .update({ is_read: true })
+            .in('id', messageIds);
+        }
+      }
+    } catch (error) {
+      console.error('Error opening messaging:', error);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!newMessage.trim() || !currentUserId || !selectedStudentDetails) return;
+
+    try {
+      setSendingMessage(true);
+
+      const { error } = await supabase
+        .from('messages' as any)
+        .insert({
+          sender_id: currentUserId,
+          receiver_id: selectedStudentDetails.student_id,
+          content: newMessage.trim(),
+          message_type: 'text'
+        });
+
+      if (error) {
+        console.error('Error sending message:', error);
+        return;
+      }
+
+      // Add message to conversation
+      const newMessageObj = {
+        id: Date.now().toString(), // Temporary ID
+        sender_id: currentUserId,
+        receiver_id: selectedStudentDetails.student_id,
+        content: newMessage.trim(),
+        message_type: 'text',
+        created_at: new Date().toISOString(),
+        is_read: false
+      };
+
+      setCurrentConversation(prev => [...prev, newMessageObj]);
+      setNewMessage('');
+
+      // Trigger refresh of conversations in other components
+      window.dispatchEvent(new CustomEvent('conversations-updated'));
+
+      // Show success toast
+      toast({
+        title: "Message sent!",
+        description: `Message sent to ${selectedStudentDetails.student_profile?.full_name}`,
+        duration: 3000,
+      });
+    } catch (error) {
+      console.error('Error sending message:', error);
+      toast({
+        title: "Error sending message",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setSendingMessage(false);
+    }
+  };
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // Scroll to bottom when conversation updates
+  useEffect(() => {
+    scrollToBottom();
+  }, [currentConversation]);
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'enrolled':
+        return <BookOpen className="h-4 w-4 text-blue-600" />;
+      case 'completed':
+        return <CheckCircle className="h-4 w-4 text-green-600" />;
+      case 'cancelled':
+        return <X className="h-4 w-4 text-red-600" />;
+      case 'dropped':
+        return <AlertCircle className="h-4 w-4 text-orange-600" />;
+      default:
+        return <BookOpen className="h-4 w-4 text-gray-600" />;
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'enrolled':
+        return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'completed':
+        return 'bg-green-100 text-green-800 border-green-200';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'dropped':
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  };
+
+  const filteredStudents = enrolledStudents.filter(enrollment =>
+    enrollment.student_profile.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    enrollment.course.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    enrollment.course.subject.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading enrolled students...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row gap-4">
-        <h2 className="text-2xl font-bold">My Students</h2>
-        <div className="flex gap-2">
-          <Input
-            placeholder="Search students..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="max-w-xs"
-          />
-          <Button variant="outline">
-            <Filter className="h-4 w-4" />
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">My Students</h2>
+          <p className="text-muted-foreground">Students enrolled in your courses</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button 
+            onClick={refreshStudents} 
+            variant="outline" 
+            size="sm"
+            disabled={refreshing}
+          >
+            {refreshing ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-2" />
+            )}
+            Refresh
           </Button>
+          <Badge variant="outline" className="px-3 py-1">
+            {enrolledStudents.length} student{enrolledStudents.length !== 1 ? 's' : ''} enrolled
+          </Badge>
         </div>
       </div>
 
-      {filteredStudents.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredStudents.map((student, idx) => (
-            <Card key={idx} className="shadow-soft hover:shadow-medium transition-all duration-300">
-              <CardHeader>
-                <div className="flex items-center gap-3">
-                  <Avatar>
-                    <AvatarImage 
-                      src={student.profile_photo_url || ""} 
-                      alt={`${student.name}'s profile photo`}
-                    />
-                    <AvatarFallback>{student.name.split(" ").map(n => n[0]).join("")}</AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <CardTitle className="text-lg">{student.name}</CardTitle>
-                    <p className="text-sm text-muted-foreground">
-                      {student.city && student.area ? `${student.city}, ${student.area}` : 'Location not specified'}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {student.education_level} • {student.learning_mode} • {student.budget_range}
-                    </p>
+      {/* Search and Filters */}
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="flex-1">
+          <div className="relative">
+            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by student name, course title, or subject..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Enrolled Students */}
+      {filteredStudents.length === 0 ? (
+        <Card className="text-center py-12">
+          <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h3 className="text-lg font-semibold mb-2">
+            {searchTerm ? 'No students found' : 'No students enrolled yet'}
+          </h3>
+          <p className="text-muted-foreground mb-4">
+            {searchTerm 
+              ? "Try adjusting your search criteria."
+              : "Students will appear here once they enroll in your courses."
+            }
+          </p>
+          {!searchTerm && (
+            <Button onClick={() => window.location.href = '#courses'}>
+              <BookOpen className="h-4 w-4 mr-2" />
+              Manage Courses
+            </Button>
+          )}
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {filteredStudents.map((enrollment) => (
+            <Card key={enrollment.id} className="hover:shadow-lg transition-shadow">
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Avatar className="h-10 w-10">
+                        <AvatarImage 
+                          src={enrollment.student_profile.profile_photo_url || ""} 
+                          alt={enrollment.student_profile.full_name}
+                        />
+                        <AvatarFallback className="text-sm">
+                          {enrollment.student_profile.full_name.split(" ").map(n => n[0]).join("") || "S"}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <CardTitle className="text-lg">{enrollment.student_profile.full_name}</CardTitle>
+                        <p className="text-sm text-muted-foreground">
+                          {enrollment.student_profile.city && enrollment.student_profile.area 
+                            ? `${enrollment.student_profile.city}, ${enrollment.student_profile.area}`
+                            : 'Location not specified'
+                          }
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-xs">
+                        {enrollment.course.subject}
+                      </Badge>
+                      <Badge variant="secondary" className="text-xs">
+                        {enrollment.course.level.charAt(0).toUpperCase() + enrollment.course.level.slice(1).replace('_', ' ')}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-2">
+                    <Badge className={`text-xs ${getStatusColor(enrollment.status)}`}>
+                      <div className="flex items-center gap-1">
+                        {getStatusIcon(enrollment.status)}
+                        {enrollment.status.charAt(0).toUpperCase() + enrollment.status.slice(1)}
+                      </div>
+                    </Badge>
+                    {enrollment.progress_percentage > 0 && (
+                      <Badge variant="outline" className="text-xs">
+                        {enrollment.progress_percentage}% Complete
+                      </Badge>
+                    )}
                   </div>
                 </div>
               </CardHeader>
+              
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Progress</span>
-                    <span>{student.progress}%</span>
-                  </div>
-                  <Progress value={student.progress} className="h-2" />
+                {/* Course Information */}
+                <div className="bg-muted/50 rounded-lg p-3">
+                  <h4 className="font-semibold text-sm mb-2">{enrollment.course.title}</h4>
+                  <p className="text-sm text-muted-foreground line-clamp-2">
+                    {enrollment.course.description || 'No description available'}
+                  </p>
                 </div>
-                
-                <div className="flex items-center gap-4 text-sm">
-                  <div className="flex items-center gap-1">
+
+                {/* Enrollment Details */}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                    <span>Enrolled {formatDate(enrollment.enrolled_at)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-muted-foreground" />
-                    <span>Last: {student.lastClass}</span>
+                    <span>{enrollment.course.duration_hours}h</span>
                   </div>
                 </div>
 
-                <div className="flex gap-2">
+                {/* Progress Bar */}
+                {enrollment.progress_percentage > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Progress</span>
+                      <span className="font-medium">{enrollment.progress_percentage}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-primary h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${enrollment.progress_percentage}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex gap-2 pt-2">
                   <Button 
                     className="flex-1" 
-                    onClick={() => onSelectStudent(student)}
+                    onClick={() => handleViewStudentDetails(enrollment)}
                   >
+                    <User className="h-4 w-4 mr-2" />
                     View Details
                   </Button>
-                  <Button variant="outline">
+                  <Button 
+                    variant="outline"
+                    onClick={() => handleOpenMessaging(enrollment)}
+                  >
                     <MessageCircle className="h-4 w-4" />
                   </Button>
                 </div>
@@ -2970,13 +3751,220 @@ function StudentManagement({
             </Card>
           ))}
         </div>
-      ) : (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <p className="text-muted-foreground">No students enrolled yet. Your students will appear here once they enroll in your classes.</p>
-          </CardContent>
-        </Card>
       )}
+
+      {/* Student Details Dialog */}
+      <Dialog open={showStudentDetails} onOpenChange={setShowStudentDetails}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              <Avatar className="h-12 w-12">
+                <AvatarImage 
+                  src={selectedStudentDetails?.student_profile?.profile_photo_url || ""} 
+                  alt={selectedStudentDetails?.student_profile?.full_name}
+                />
+                <AvatarFallback className="text-lg">
+                  {selectedStudentDetails?.student_profile?.full_name?.split(" ").map(n => n[0]).join("") || "S"}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <div className="text-xl font-bold">{selectedStudentDetails?.student_profile?.full_name}</div>
+                <div className="text-sm text-muted-foreground">Student Profile</div>
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-6">
+            {/* Basic Information */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Full Name</Label>
+                <div className="text-sm">{selectedStudentDetails?.student_profile?.full_name || 'Not provided'}</div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Location</Label>
+                <div className="text-sm">
+                  {selectedStudentDetails?.student_profile?.city && selectedStudentDetails?.student_profile?.area 
+                    ? `${selectedStudentDetails.student_profile.city}, ${selectedStudentDetails.student_profile.area}`
+                    : 'Not specified'
+                  }
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Primary Language</Label>
+                <div className="text-sm">{selectedStudentDetails?.student_profile?.primary_language || 'Not specified'}</div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Role</Label>
+                <div className="text-sm capitalize">{selectedStudentDetails?.student_profile?.role || 'Not specified'}</div>
+              </div>
+            </div>
+
+            {/* Course Information */}
+            <div className="space-y-3">
+              <Label className="text-sm font-medium text-muted-foreground">Enrolled Course</Label>
+              <Card className="p-4">
+                <div className="space-y-2">
+                  <div className="font-semibold">{selectedStudentDetails?.course?.title}</div>
+                  <div className="text-sm text-muted-foreground">{selectedStudentDetails?.course?.description}</div>
+                  <div className="flex gap-2">
+                    <Badge variant="outline">{selectedStudentDetails?.course?.subject}</Badge>
+                    <Badge variant="secondary">{selectedStudentDetails?.course?.level}</Badge>
+                    <Badge variant="outline">{selectedStudentDetails?.course?.duration_hours}h</Badge>
+                  </div>
+                </div>
+              </Card>
+            </div>
+
+            {/* Enrollment Details */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Enrollment Date</Label>
+                <div className="text-sm">{selectedStudentDetails?.enrolled_at ? new Date(selectedStudentDetails.enrolled_at).toLocaleDateString() : 'Not specified'}</div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-muted-foreground">Status</Label>
+                <div className="flex items-center gap-2">
+                  {getStatusIcon(selectedStudentDetails?.status || 'enrolled')}
+                  <span className="capitalize">{selectedStudentDetails?.status || 'enrolled'}</span>
+                </div>
+              </div>
+              {selectedStudentDetails?.progress_percentage > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Progress</Label>
+                  <div className="flex items-center gap-2">
+                    <Progress value={selectedStudentDetails.progress_percentage} className="flex-1 h-2" />
+                    <span className="text-sm font-medium">{selectedStudentDetails.progress_percentage}%</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Student Profile Details (if available) */}
+            {selectedStudentDetails?.student_details && (
+              <div className="space-y-3">
+                <Label className="text-sm font-medium text-muted-foreground">Additional Details</Label>
+                <Card className="p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium text-muted-foreground">Education Level</Label>
+                      <div className="text-sm">{selectedStudentDetails.student_details.education_level || 'Not specified'}</div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium text-muted-foreground">Learning Mode</Label>
+                      <div className="text-sm">{selectedStudentDetails.student_details.learning_mode || 'Not specified'}</div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium text-muted-foreground">Budget Range</Label>
+                      <div className="text-sm">{selectedStudentDetails.student_details.budget_range || 'Not specified'}</div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium text-muted-foreground">Preferred Subjects</Label>
+                      <div className="text-sm">{selectedStudentDetails.student_details.preferred_subjects || 'Not specified'}</div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-4">
+            <Button 
+              variant="outline" 
+              onClick={() => setShowStudentDetails(false)}
+            >
+              Close
+            </Button>
+            <Button 
+              onClick={() => {
+                setShowStudentDetails(false);
+                handleOpenMessaging(selectedStudentDetails);
+              }}
+            >
+              <MessageCircle className="h-4 w-4 mr-2" />
+              Send Message
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Messaging Dialog */}
+      <Dialog open={showMessaging} onOpenChange={setShowMessaging}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3">
+              <Avatar className="h-8 w-8">
+                <AvatarImage 
+                  src={selectedStudentDetails?.student_profile?.profile_photo_url || ""} 
+                  alt={selectedStudentDetails?.student_profile?.full_name}
+                />
+                <AvatarFallback>
+                  {selectedStudentDetails?.student_profile?.full_name?.split(" ").map(n => n[0]).join("") || "S"}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <div className="font-bold">Chat with {selectedStudentDetails?.student_profile?.full_name}</div>
+                <div className="text-sm text-muted-foreground">Course: {selectedStudentDetails?.course?.title}</div>
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto space-y-4 p-4 border rounded-lg min-h-[300px]">
+            {currentConversation.length === 0 ? (
+              <div className="text-center text-muted-foreground py-8">
+                <MessageCircle className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                <p>No messages yet. Start the conversation!</p>
+              </div>
+            ) : (
+              currentConversation.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.sender_id === currentUserId ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[70%] rounded-lg px-3 py-2 ${
+                      message.sender_id === currentUserId
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted'
+                    }`}
+                  >
+                    <div className="text-sm">{message.content}</div>
+                    <div className="text-xs opacity-70 mt-1">
+                      {new Date(message.created_at).toLocaleTimeString([], { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Message Input */}
+          <div className="flex gap-2 pt-4">
+            <Input
+              placeholder="Type your message..."
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+              disabled={sendingMessage}
+            />
+            <Button 
+              onClick={sendMessage} 
+              disabled={!newMessage.trim() || sendingMessage}
+            >
+              {sendingMessage ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -5809,12 +6797,896 @@ function ProfileEditDialog({
   );
 }
 
-// Placeholder Components
-function ScheduleDashboard({ tutorProfile }: { tutorProfile: TutorProfile | null }) {
+// Enhanced Schedule Dashboard Component
+function ScheduleDashboard({ tutorProfile, toast, onRefresh }: { tutorProfile: TutorProfile | null; toast: any; onRefresh?: () => void }) {
+  const [upcomingSessions, setUpcomingSessions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedSession, setSelectedSession] = useState<any | null>(null);
+  const [showSessionDetails, setShowSessionDetails] = useState(false);
+  const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
+  const [rescheduleData, setRescheduleData] = useState({
+    start_time: '',
+    end_time: '',
+    notes: ''
+  });
+  const [currentWeek, setCurrentWeek] = useState(new Date());
+  const [showAvailabilityDialog, setShowAvailabilityDialog] = useState(false);
+  const [availabilityData, setAvailabilityData] = useState({
+    timezone: 'Asia/Kolkata',
+    weekly_schedule: {
+      monday: { available: false, slots: [] },
+      tuesday: { available: false, slots: [] },
+      wednesday: { available: false, slots: [] },
+      thursday: { available: false, slots: [] },
+      friday: { available: false, slots: [] },
+      saturday: { available: false, slots: [] },
+      sunday: { available: false, slots: [] }
+    }
+  });
+  const [editingDay, setEditingDay] = useState<string | null>(null);
+  const [showTimeSlotDialog, setShowTimeSlotDialog] = useState(false);
+  const [timeSlotData, setTimeSlotData] = useState({
+    start: '',
+    end: ''
+  });
+
+  useEffect(() => {
+    console.log('🚀 ScheduleDashboard component mounted, loading sessions...');
+    loadUpcomingSessions();
+    loadAvailabilityData();
+  }, []);
+
+  // Sync local availabilityData when tutorProfile changes
+  useEffect(() => {
+    if (tutorProfile) {
+      setAvailabilityData(prev => ({
+        ...prev,
+        timezone: tutorProfile.timezone || 'Asia/Kolkata',
+        weekly_schedule: tutorProfile.weekly_schedule || prev.weekly_schedule
+      }));
+    }
+  }, [tutorProfile]);
+
+  const loadAvailabilityData = async () => {
+    try {
+      if (tutorProfile?.weekly_schedule) {
+        setAvailabilityData(prev => ({
+          ...prev,
+          timezone: tutorProfile.timezone || 'Asia/Kolkata',
+          weekly_schedule: tutorProfile.weekly_schedule
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading availability data:', error);
+    }
+  };
+
+  const loadUpcomingSessions = async () => {
+    try {
+      setLoading(true);
+      console.log('🔄 Loading upcoming sessions from courses...');
+      
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('❌ No user found');
+        return;
+      }
+      
+      console.log('👤 Current user ID:', user.id);
+
+      // Get all active courses for this tutor with start_time
+      const { data: courses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id, title, description, subject, level, duration_hours, start_time, created_at, status')
+        .eq('tutor_id', user.id)
+        .eq('is_active', true)
+        .gte('start_time', new Date().toISOString()) // Only future courses
+        .order('start_time', { ascending: true }); // Sort by start time
+
+      console.log('🔍 Raw courses data from database:', courses);
+      if (courses && courses.length > 0) {
+        courses.forEach((course, index) => {
+          console.log(`📚 Course ${index + 1}:`, {
+            id: course.id,
+            title: course.title,
+            start_time: course.start_time,
+            start_time_type: typeof course.start_time,
+            parsed_date: course.start_time ? new Date(course.start_time) : 'null',
+            has_start_time: 'start_time' in course,
+            all_fields: Object.keys(course)
+          });
+        });
+      }
+
+      if (coursesError) {
+        console.error('❌ Error loading courses:', coursesError);
+        return;
+      }
+
+      console.log('📚 Courses found:', courses);
+      console.log('📊 Number of courses:', courses?.length || 0);
+
+      if (!courses || courses.length === 0) {
+        console.log('📭 No upcoming courses found for this tutor');
+        setUpcomingSessions([]);
+        setLoading(false);
+        return;
+      }
+
+      // Get enrollments for these courses
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('course_id, student_id, enrolled_at, status')
+        .in('course_id', courses.map(c => c.id))
+        .eq('status', 'enrolled');
+
+      if (enrollmentsError) {
+        console.error('❌ Error loading enrollments:', enrollmentsError);
+        return;
+      }
+
+      console.log('👥 Enrollments found:', enrollments);
+
+      // Create sessions from courses (with or without enrollments)
+      const sessionsFromCourses = await Promise.all(
+        courses.map(async (course) => {
+          // Find enrollments for this course
+          const courseEnrollments = enrollments.filter(e => e.course_id === course.id);
+          
+          // Create a session object from the course using the course start_time
+          const session = {
+            id: `course-${course.id}`, // Use course ID as session ID
+            course_id: course.id,
+            tutor_id: user.id,
+            student_id: courseEnrollments.length > 0 ? courseEnrollments[0].student_id : null,
+            title: course.title,
+            description: course.description || 'Course session',
+            start_time: course.start_time, // Use course start_time instead of enrollment date
+            end_time: new Date(new Date(course.start_time).getTime() + (course.duration_hours || 1) * 60 * 60 * 1000).toISOString(),
+            duration_minutes: (course.duration_hours || 1) * 60,
+            status: course.status || (courseEnrollments.length > 0 ? 'scheduled' : 'no_enrollments'),
+            meeting_link: '',
+            notes: `Course: ${course.subject} - Level: ${course.level}`,
+            course: {
+              title: course.title,
+              subject: course.subject || 'General',
+              level: course.level || 'Beginner'
+            },
+            student_profile: courseEnrollments.length > 0 ? 
+              (await supabase
+                .from('profiles' as any)
+                .select('full_name, profile_photo_url')
+                .eq('user_id', courseEnrollments[0].student_id)
+                .single()
+              ).data || { full_name: 'Unknown Student', profile_photo_url: '' } :
+              { full_name: 'No Enrollments Yet', profile_photo_url: '' },
+            enrollment_count: courseEnrollments.length,
+            is_course_session: true, // Flag to identify this is a course-based session
+            course_start_time: course.start_time, // Store the actual course start time
+            has_enrollments: courseEnrollments.length > 0
+          };
+
+          console.log(`✅ Created session from course ${course.id}:`, {
+            course_title: course.title,
+            course_start_time: course.start_time,
+            session_start_time: session.start_time,
+            parsed_start_time: new Date(session.start_time),
+            formatted_start_time: formatDateTime(session.start_time),
+            has_enrollments: courseEnrollments.length > 0,
+            enrollment_count: courseEnrollments.length
+          });
+
+          console.log(`✅ Created session from course:`, session);
+          return session;
+        })
+      );
+
+      // Sort sessions by course start time
+      const validSessions = sessionsFromCourses
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+
+      console.log('🎯 Final sessions from courses:', validSessions);
+      console.log('📊 Total sessions found:', validSessions.length);
+      
+      // Debug each session's time formatting
+      validSessions.forEach((session, index) => {
+        console.log(`🔍 Session ${index + 1} time debug:`, {
+          title: session.title,
+          raw_start_time: session.start_time,
+          parsed_date: new Date(session.start_time),
+          formatted: formatDateTime(session.start_time),
+          is_valid_date: !isNaN(new Date(session.start_time).getTime()),
+          has_enrollments: session.has_enrollments,
+          enrollment_count: session.enrollment_count,
+          status: session.status
+        });
+      });
+      
+      setUpcomingSessions(validSessions);
+    } catch (error) {
+      console.error('❌ Error loading upcoming sessions:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshSessions = async () => {
+    setRefreshing(true);
+    await loadUpcomingSessions();
+    setRefreshing(false);
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'scheduled':
+        return <Clock className="h-4 w-4 text-blue-600" />;
+      case 'in_progress':
+        return <Play className="h-4 w-4 text-green-600" />;
+      case 'completed':
+        return <CheckCircle className="h-4 w-4 text-green-600" />;
+      case 'cancelled':
+        return <X className="h-4 w-4 text-red-600" />;
+      case 'rescheduled':
+        return <RefreshCw className="h-4 w-4 text-orange-600" />;
+      case 'no_enrollments':
+        return <Users className="h-4 w-4 text-gray-600" />;
+      default:
+        return <Clock className="h-4 w-4 text-gray-600" />;
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'scheduled':
+        return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'in_progress':
+        return 'bg-green-100 text-green-800 border-green-200';
+      case 'completed':
+        return 'bg-green-100 text-green-800 border-green-200';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'rescheduled':
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'no_enrollments':
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const formatDateTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return {
+      date: date.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      }),
+      time: date.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
+    };
+  };
+
+  // Weekly Calendar Functions
+  const getWeekDays = () => {
+    const days = [];
+    const startOfWeek = new Date(currentWeek);
+    startOfWeek.setDate(currentWeek.getDate() - currentWeek.getDay());
+    
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(startOfWeek);
+      day.setDate(startOfWeek.getDate() + i);
+      days.push(day);
+    }
+    return days;
+  };
+
+  const getTimeSlots = () => {
+    const slots = [];
+    for (let hour = 6; hour <= 22; hour++) {
+      slots.push(`${hour.toString().padStart(2, '0')}:00`);
+    }
+    return slots;
+  };
+
+  const getSessionsForDayAndTime = (day: Date, timeSlot: string) => {
+    const dayStart = new Date(day);
+    const [hour] = timeSlot.split(':');
+    dayStart.setHours(parseInt(hour), 0, 0, 0);
+    
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(parseInt(hour) + 1, 0, 0, 0);
+    
+    return upcomingSessions.filter(session => {
+      const sessionTime = new Date(session.start_time);
+      return sessionTime >= dayStart && sessionTime < dayEnd;
+    });
+  };
+
+  const navigateWeek = (direction: 'prev' | 'next') => {
+    const newWeek = new Date(currentWeek);
+    if (direction === 'prev') {
+      newWeek.setDate(currentWeek.getDate() - 7);
+    } else {
+      newWeek.setDate(currentWeek.getDate() + 7);
+    }
+    setCurrentWeek(newWeek);
+  };
+
+  const formatTimeSlot = (timeSlot: string) => {
+    const [hour] = timeSlot.split(':');
+    const hourNum = parseInt(hour);
+    if (hourNum === 12) return '12 PM';
+    if (hourNum > 12) return `${hourNum - 12} PM`;
+    if (hourNum === 0) return '12 AM';
+    return `${hourNum} AM`;
+  };
+
+  const formatDayHeader = (date: Date) => {
+    const today = new Date();
+    const isToday = date.toDateString() === today.toDateString();
+    
+    return (
+      <div className={`text-center p-2 ${isToday ? 'bg-blue-100 rounded-lg' : ''}`}>
+        <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+          {date.toLocaleDateString('en-US', { weekday: 'short' })}
+        </div>
+        <div className={`text-lg font-bold ${isToday ? 'text-blue-600' : 'text-gray-900'}`}>
+          {date.getDate()}
+        </div>
+        <div className="text-xs text-gray-500">
+          {date.toLocaleDateString('en-US', { month: 'short' })}
+        </div>
+      </div>
+    );
+  };
+
+  // Availability Management Functions
+  const handleDayToggle = (day: string) => {
+    setAvailabilityData(prev => ({
+      ...prev,
+      weekly_schedule: {
+        ...prev.weekly_schedule,
+        [day]: {
+          ...prev.weekly_schedule[day as keyof typeof prev.weekly_schedule],
+          available: !prev.weekly_schedule[day as keyof typeof prev.weekly_schedule].available
+        }
+      }
+    }));
+  };
+
+  const openTimeSlotDialog = (day: string) => {
+    setEditingDay(day);
+    setTimeSlotData({ start: '', end: '' });
+    setShowTimeSlotDialog(true);
+  };
+
+  const addTimeSlot = () => {
+    if (!editingDay || !timeSlotData.start || !timeSlotData.end) return;
+
+    setAvailabilityData(prev => ({
+      ...prev,
+      weekly_schedule: {
+        ...prev.weekly_schedule,
+        [editingDay]: {
+          ...prev.weekly_schedule[editingDay as keyof typeof prev.weekly_schedule],
+          slots: [
+            ...prev.weekly_schedule[editingDay as keyof typeof prev.weekly_schedule].slots,
+            { start: timeSlotData.start, end: timeSlotData.end }
+          ]
+        }
+      }
+    }));
+
+    setShowTimeSlotDialog(false);
+    setEditingDay(null);
+    setTimeSlotData({ start: '', end: '' });
+  };
+
+  const removeTimeSlot = (day: string, index: number) => {
+    setAvailabilityData(prev => ({
+      ...prev,
+      weekly_schedule: {
+        ...prev.weekly_schedule,
+        [day]: {
+          ...prev.weekly_schedule[day as keyof typeof prev.weekly_schedule],
+          slots: prev.weekly_schedule[day as keyof typeof prev.weekly_schedule].slots.filter((_, i) => i !== index)
+        }
+      }
+    }));
+  };
+
+  const saveAvailability = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Update the tutor profile with new availability
+      const { error } = await supabase
+        .from('tutor_profiles')
+        .update({
+          timezone: availabilityData.timezone,
+          weekly_schedule: availabilityData.weekly_schedule,
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.error('Error saving availability:', error);
+        toast({
+          title: "Error",
+          description: "Failed to save availability. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Success",
+        description: "Your availability has been saved successfully.",
+      });
+
+      setShowAvailabilityDialog(false);
+      
+      // Update the local tutorProfile state immediately for instant UI update
+      if (tutorProfile) {
+        const updatedTutorProfile = {
+          ...tutorProfile,
+          timezone: availabilityData.timezone,
+          weekly_schedule: availabilityData.weekly_schedule
+        };
+        
+        // Force a re-render by updating the local state
+        // This will make the Weekly Availability card show the new data immediately
+        setAvailabilityData(prev => ({
+          ...prev,
+          timezone: availabilityData.timezone,
+          weekly_schedule: availabilityData.weekly_schedule
+        }));
+      }
+      
+      // Refresh the parent component to show updated data
+      if (onRefresh) {
+        onRefresh();
+      }
+    } catch (error) {
+      console.error('Error saving availability:', error);
+      toast({
+        title: "Error",
+        description: "Failed to save availability. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSessionAction = async (sessionId: string, action: string, newData?: any) => {
+    try {
+      let updateData = {};
+      
+      switch (action) {
+        case 'start':
+          updateData = { status: 'in_progress' };
+          break;
+        case 'complete':
+          updateData = { status: 'completed' };
+          break;
+        case 'cancel':
+          updateData = { status: 'cancelled' };
+          break;
+        case 'reschedule':
+          updateData = { 
+            start_time: newData.start_time,
+            end_time: newData.end_time,
+            notes: newData.notes,
+            status: 'rescheduled'
+          };
+          break;
+        default:
+          return;
+      }
+
+      const { error } = await supabase
+        .from('classes' as any)
+        .update(updateData)
+        .eq('id', sessionId);
+
+      if (error) {
+        console.error(`Error ${action}ing session:`, error);
+        return;
+      }
+
+      // Refresh sessions
+      await loadUpcomingSessions();
+      
+      // Close dialogs
+      setShowSessionDetails(false);
+      setShowRescheduleDialog(false);
+      setSelectedSession(null);
+    } catch (error) {
+      console.error(`Error ${action}ing session:`, error);
+    }
+  };
+
+  const handleCourseSessionAction = async (session: any, action: string) => {
+    try {
+      console.log(`🔄 Handling course session action: ${action} for session:`, session);
+      
+      let updateData = {};
+      
+      switch (action) {
+        case 'complete':
+          updateData = { 
+            status: 'completed',
+            is_active: false  // Deactivate completed courses
+          };
+          break;
+        case 'cancel':
+          updateData = { 
+            status: 'cancelled',
+            is_active: false  // Deactivate cancelled courses
+          };
+          break;
+        default:
+          console.log('❌ Invalid action:', action);
+          return;
+      }
+
+      // For course-based sessions, we need to update the course status
+      // Since these are virtual sessions created from courses, we'll update the course
+      const { error } = await supabase
+        .from('courses' as any)
+        .update(updateData)
+        .eq('id', session.course_id);
+
+      if (error) {
+        console.error(`Error ${action}ing course session:`, error);
+        toast({
+          title: "Error",
+          description: `Failed to ${action} the course session.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      console.log(`✅ Successfully ${action}ed course session:`, session.title);
+      console.log(`🔄 Course status updated to: ${action === 'complete' ? 'completed' : 'cancelled'}`);
+      
+      // Show success toast
+      toast({
+        title: "Success",
+        description: `Course session "${session.title}" has been ${action}ed.`,
+        variant: "default",
+      });
+
+      // Refresh sessions to update the UI immediately
+      await loadUpcomingSessions();
+      
+      // Also refresh the courses list in the main dashboard
+      if (onRefresh) {
+        onRefresh();
+      }
+      
+    } catch (error) {
+      console.error(`Error ${action}ing course session:`, error);
+      toast({
+        title: "Error",
+        description: `Failed to ${action} the course session.`,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const openRescheduleDialog = (session: any) => {
+    setSelectedSession(session);
+    setRescheduleData({
+      start_time: session.start_time.slice(0, 16), // Remove seconds and timezone
+      end_time: session.end_time.slice(0, 16),
+      notes: session.notes || ''
+    });
+    setShowRescheduleDialog(true);
+  };
+
+  const createSampleClasses = async () => {
+    try {
+      console.log('🏗️ Creating sample classes...');
+      
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('❌ No user found');
+        return;
+      }
+
+      // First, let's check if we have any courses
+      const { data: courses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id, title')
+        .eq('tutor_id', user.id)
+        .limit(1);
+
+      if (coursesError || !courses || courses.length === 0) {
+        console.log('❌ No courses found for this tutor. Please create a course first.');
+        toast({
+          title: "No courses found",
+          description: "Please create a course before scheduling classes.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      const courseId = courses[0].id;
+      console.log('📚 Using course:', courseId);
+
+      // Get a sample student (we'll use the first enrolled student or create a dummy one)
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('student_id')
+        .eq('course_id', courseId)
+        .limit(1);
+
+      let studentId = user.id; // Fallback to tutor's own ID for testing
+      if (!enrollmentsError && enrollments && enrollments.length > 0) {
+        studentId = enrollments[0].studentId;
+        console.log('👤 Using enrolled student:', studentId);
+      } else {
+        console.log('👤 No enrolled students, using fallback student ID');
+      }
+
+      // Create sample classes for the next few days
+      const sampleClasses = [
+        {
+          course_id: courseId,
+          tutor_id: user.id,
+          student_id: studentId,
+          title: 'Introduction to Mathematics',
+          description: 'Basic concepts and problem-solving techniques',
+          start_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // Tomorrow
+          end_time: new Date(Date.now() + 24 * 60 * 60 * 1000 + 60 * 60 * 1000).toISOString(), // Tomorrow + 1 hour
+          duration_minutes: 60,
+          status: 'scheduled',
+          meeting_link: 'https://meet.google.com/sample-link',
+          notes: 'Please prepare basic math problems'
+        },
+        {
+          course_id: courseId,
+          tutor_id: user.id,
+          student_id: studentId,
+          title: 'Advanced Problem Solving',
+          description: 'Complex mathematical challenges and solutions',
+          start_time: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(), // Day after tomorrow
+          end_time: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000 + 90 * 60 * 60 * 1000).toISOString(), // Day after tomorrow + 1.5 hours
+          duration_minutes: 90,
+          status: 'scheduled',
+          meeting_link: 'https://meet.google.com/sample-link-2',
+          notes: 'Review previous session materials'
+        },
+        {
+          course_id: courseId,
+          tutor_id: user.id,
+          student_id: studentId,
+          title: 'Practice Session',
+          description: 'Hands-on practice with real problems',
+          start_time: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days from now
+          end_time: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000 + 45 * 60 * 60 * 1000).toISOString(), // 3 days from now + 45 min
+          duration_minutes: 45,
+          status: 'scheduled',
+          meeting_link: 'https://meet.google.com/sample-link-3',
+          notes: 'Bring your questions and homework'
+        }
+      ];
+
+      console.log('📅 Creating sample classes:', sampleClasses);
+
+      // Insert the sample classes
+      const { data: insertedClasses, error: insertError } = await supabase
+        .from('classes' as any)
+        .insert(sampleClasses)
+        .select();
+
+      if (insertError) {
+        console.error('❌ Error creating sample classes:', insertError);
+        toast({
+          title: "Error creating sample classes",
+          description: insertError.message,
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      console.log('✅ Sample classes created successfully:', insertedClasses);
+      
+      toast({
+        title: "Sample classes created!",
+        description: `Created ${insertedClasses.length} sample classes for testing.`,
+        duration: 5000,
+      });
+
+      // Refresh the sessions list
+      await loadUpcomingSessions();
+
+    } catch (error) {
+      console.error('❌ Error in createSampleClasses:', error);
+      toast({
+        title: "Error creating sample classes",
+        description: "An unexpected error occurred.",
+        variant: "destructive",
+        duration: 5000,
+      });
+    }
+  };
+
+  const createClassFromEnrollment = async () => {
+    try {
+      console.log('📅 Creating class from existing enrollment...');
+      
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('❌ No user found');
+        return;
+      }
+
+      // Get courses for this tutor
+      const { data: courses, error: coursesError } = await supabase
+        .from('courses' as any)
+        .select('id, title, description')
+        .eq('tutor_id', user.id)
+        .eq('is_active', true);
+
+      if (coursesError || !courses || courses.length === 0) {
+        toast({
+          title: "No courses found",
+          description: "Please create a course first.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      // Get enrollments for these courses
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from('course_enrollments' as any)
+        .select('course_id, student_id, status')
+        .in('course_id', courses.map(c => c.id))
+        .eq('status', 'enrolled');
+
+      if (enrollmentsError || !enrollments || enrollments.length === 0) {
+        toast({
+          title: "No enrollments found",
+          description: "Please have students enroll in your courses first.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      // Create a class for the first enrollment
+      const firstEnrollment = enrollments[0];
+      const firstCourse = courses.find(c => c.id === firstEnrollment.course_id);
+
+      if (!firstCourse) {
+        toast({
+          title: "Course not found",
+          description: "The course for this enrollment could not be found.",
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      const newClass = {
+        course_id: firstEnrollment.course_id,
+        tutor_id: user.id,
+        student_id: firstEnrollment.student_id,
+        title: `${firstCourse.title} - First Session`,
+        description: firstCourse.description || 'Welcome to your first class!',
+        start_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // Tomorrow
+        end_time: new Date(Date.now() + 24 * 60 * 60 * 1000 + 60 * 60 * 1000).toISOString(), // Tomorrow + 1 hour
+        duration_minutes: 60,
+        status: 'scheduled',
+        meeting_link: '',
+        notes: 'Please come prepared with any questions you have about the course.'
+      };
+
+      console.log('📅 Creating class from enrollment:', newClass);
+
+      const { data: createdClass, error: createError } = await supabase
+        .from('classes' as any)
+        .insert(newClass)
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('❌ Error creating class:', createError);
+        toast({
+          title: "Error creating class",
+          description: createError.message,
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      console.log('✅ Class created successfully:', createdClass);
+      
+      toast({
+        title: "Class created!",
+        description: `Created a class for ${firstCourse.title}`,
+        duration: 5000,
+      });
+
+      // Refresh the sessions list
+      await loadUpcomingSessions();
+
+    } catch (error) {
+      console.error('❌ Error in createClassFromEnrollment:', error);
+      toast({
+        title: "Error creating class",
+        description: "An unexpected error occurred.",
+        variant: "destructive",
+        duration: 5000,
+      });
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading schedule...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Schedule & Availability</h2>
-      
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Schedule & Sessions</h2>
+          <p className="text-muted-foreground">Manage your upcoming classes and availability</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button 
+            onClick={refreshSessions} 
+            variant="outline" 
+            size="sm"
+            disabled={refreshing}
+          >
+            {refreshing ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-2" />
+            )}
+            Refresh
+          </Button>
+          <Button 
+            onClick={() => {
+              console.log('🧪 Test button clicked');
+              console.log('Current state:', { upcomingSessions, loading, refreshing });
+              loadUpcomingSessions();
+            }} 
+            variant="outline" 
+            size="sm"
+          >
+            🧪 Test Load
+          </Button>
+
+          <Badge variant="outline" className="px-3 py-1">
+            {upcomingSessions.length} session{upcomingSessions.length !== 1 ? 's' : ''}
+          </Badge>
+        </div>
+      </div>
+
       {/* Current Availability */}
       <Card>
         <CardHeader>
@@ -5822,26 +7694,35 @@ function ScheduleDashboard({ tutorProfile }: { tutorProfile: TutorProfile | null
             <Calendar className="h-5 w-5 text-blue-600" />
             Weekly Availability
           </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowAvailabilityDialog(true)}
+          >
+            <Edit className="h-4 w-4 mr-2" />
+            Edit Availability
+          </Button>
         </CardHeader>
         <CardContent>
-          {tutorProfile?.weekly_schedule && Object.values(tutorProfile.weekly_schedule).some(day => day.available) ? (
+          {/* Use local availabilityData state for immediate UI updates */}
+          {availabilityData.weekly_schedule && Object.values(availabilityData.weekly_schedule).some(day => day.available) ? (
             <div className="space-y-4">
               {/* Timezone Info */}
-              {tutorProfile?.timezone && (
+              {availabilityData.timezone && (
                 <div className="mb-4 p-3 bg-blue-50 rounded-lg">
                   <div className="flex items-center gap-2 mb-2">
                     <Globe className="h-4 w-4 text-blue-600" />
                     <span className="font-medium text-gray-700">Your Timezone</span>
                   </div>
                   <Badge variant="outline" className="bg-blue-100 text-blue-700 border-blue-300">
-                    {tutorProfile.timezone}
+                    {availabilityData.timezone}
                   </Badge>
                 </div>
               )}
               
               {/* Weekly Schedule Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-3">
-                {Object.entries(tutorProfile.weekly_schedule).map(([day, schedule]) => (
+                {Object.entries(availabilityData.weekly_schedule).map(([day, schedule]) => (
                   <Card key={day} className={`${schedule.available ? 'border-blue-200 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}>
                     <CardContent className="p-3">
                       <div className="text-center">
@@ -5881,7 +7762,10 @@ function ScheduleDashboard({ tutorProfile }: { tutorProfile: TutorProfile | null
               <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
               <h3 className="text-lg font-semibold mb-2">No Availability Set</h3>
               <p className="text-muted-foreground mb-4">Set your weekly schedule to let students know when you're available.</p>
-              <Button variant="outline">
+              <Button 
+                variant="outline"
+                onClick={() => setShowAvailabilityDialog(true)}
+              >
                 <Edit className="h-4 w-4 mr-2" />
                 Set Availability
               </Button>
@@ -5890,22 +7774,708 @@ function ScheduleDashboard({ tutorProfile }: { tutorProfile: TutorProfile | null
         </CardContent>
       </Card>
       
-      {/* Upcoming Classes */}
+      {/* Weekly Calendar View */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5 text-purple-600" />
+            Weekly Calendar View
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigateWeek('prev')}
+            >
+              ← Previous Week
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentWeek(new Date())}
+            >
+              Today
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigateWeek('next')}
+            >
+              Next Week →
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <div className="min-w-[800px]">
+              {/* Calendar Grid */}
+              <div className="grid grid-cols-8 gap-px bg-gray-200 border border-gray-200 rounded-lg overflow-hidden">
+                {/* Time column header */}
+                <div className="bg-gray-50 p-2 border-r border-gray-200">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide text-center">
+                    Time
+                  </div>
+                </div>
+                
+                {/* Day headers */}
+                {getWeekDays().map((day, dayIndex) => (
+                  <div key={dayIndex} className="bg-gray-50 p-2 border-r border-gray-200">
+                    {formatDayHeader(day)}
+                  </div>
+                ))}
+                
+                {/* Time slots and sessions */}
+                {getTimeSlots().map((timeSlot, timeIndex) => (
+                  <div key={timeIndex}>
+                    {/* Time label */}
+                    <div className="bg-gray-50 p-2 border-r border-gray-200 border-t border-gray-200">
+                      <div className="text-xs font-medium text-gray-600 text-center">
+                        {formatTimeSlot(timeSlot)}
+                      </div>
+                    </div>
+                    
+                    {/* Sessions for each day at this time */}
+                    {getWeekDays().map((day, dayIndex) => {
+                      const sessions = getSessionsForDayAndTime(day, timeSlot);
+                      return (
+                        <div 
+                          key={dayIndex} 
+                          className="bg-white p-1 border-r border-gray-200 border-t border-gray-200 min-h-[60px] relative"
+                        >
+                          {sessions.map((session, sessionIndex) => (
+                            <div
+                              key={sessionIndex}
+                              className="absolute inset-1 cursor-pointer rounded-md p-2 text-xs overflow-hidden hover:shadow-md transition-shadow"
+                              style={{
+                                backgroundColor: session.status === 'completed' ? '#dcfce7' : 
+                                               session.status === 'cancelled' ? '#fee2e2' : 
+                                               session.status === 'no_enrollments' ? '#f3f4f6' : '#dbeafe',
+                                border: `1px solid ${
+                                  session.status === 'completed' ? '#22c55e' : 
+                                  session.status === 'cancelled' ? '#ef4444' : 
+                                  session.status === 'no_enrollments' ? '#9ca3af' : '#3b82f6'
+                                }`,
+                                zIndex: 10
+                              }}
+                              onClick={() => {
+                                setSelectedSession(session);
+                                setShowSessionDetails(true);
+                              }}
+                              title={`${session.title} - ${session.student_profile.full_name} - ${formatDateTime(session.start_time).time}`}
+                            >
+                              <div className="font-medium text-gray-900 truncate">
+                                {session.title}
+                              </div>
+                              <div className="text-gray-600 truncate">
+                                {session.student_profile.full_name}
+                              </div>
+                              <div className="text-gray-500 truncate">
+                                {formatDateTime(session.start_time).time}
+                              </div>
+                              {session.status === 'completed' && (
+                                <div className="absolute top-1 right-1 text-green-600">✓</div>
+                              )}
+                              {session.status === 'cancelled' && (
+                                <div className="absolute top-1 right-1 text-red-600">✗</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          
+          {/* Calendar Legend */}
+          <div className="mt-4 flex flex-wrap gap-4 text-xs">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-blue-100 border border-blue-500 rounded"></div>
+              <span>Scheduled</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-green-100 border border-green-500 rounded"></div>
+              <span>Completed</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-red-100 border border-red-500 rounded"></div>
+              <span>Cancelled</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-gray-100 border border-gray-500 rounded"></div>
+              <span>No Enrollments</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* Upcoming Sessions */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <BookOpen className="h-5 w-5 text-green-600" />
-            Upcoming Classes
+            Upcoming Sessions
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-center py-8">
-            <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-            <h3 className="text-lg font-semibold mb-2">No Classes Scheduled</h3>
-            <p className="text-muted-foreground">No upcoming classes scheduled yet.</p>
-          </div>
+          {upcomingSessions.length === 0 ? (
+            <div className="text-center py-8">
+              <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+              <h3 className="text-lg font-semibold mb-2">No Sessions Scheduled</h3>
+              <p className="text-muted-foreground">No upcoming classes scheduled yet.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {upcomingSessions.map((session) => {
+                const { date, time } = formatDateTime(session.start_time);
+                return (
+                  <Card key={session.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 space-y-3">
+                          {/* Session Header */}
+                          <div className="flex items-center gap-3">
+                            <Avatar className="h-10 w-10">
+                              <AvatarImage 
+                                src={session.student_profile.profile_photo_url || ""} 
+                                alt={session.student_profile.full_name}
+                              />
+                              <AvatarFallback className="text-sm">
+                                {session.has_enrollments 
+                                  ? session.student_profile.full_name.split(" ").map(n => n[0]).join("") || "S"
+                                  : "?"
+                                }
+                              </AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <h4 className="font-semibold">{session.title || 'Class Session'}</h4>
+                              <p className="text-sm text-muted-foreground">
+                                {session.has_enrollments 
+                                  ? `with ${session.student_profile.full_name}`
+                                  : 'No students enrolled yet'
+                                }
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Session Details */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Calendar className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm">
+                                  {session.is_course_session 
+                                    ? `Course starts ${date} at ${time}`
+                                    : `${date} at ${time}`
+                                  }
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Clock className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm">{session.duration_minutes} min</span>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <BookOpen className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm">{session.course.title}</span>
+                                {session.status === 'completed' && (
+                                  <span className="text-xs text-green-600 font-medium">✓</span>
+                                )}
+                                {session.status === 'cancelled' && (
+                                  <span className="text-xs text-red-600 font-medium">✗</span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge className={`text-xs ${getStatusColor(session.status)}`}>
+                                  <div className="flex items-center gap-1">
+                                    {getStatusIcon(session.status)}
+                                    {session.status === 'no_enrollments' ? 'No Enrollments' : 
+                                     session.status === 'completed' ? 'Completed' :
+                                     session.status === 'cancelled' ? 'Cancelled' :
+                                     session.status.replace('_', ' ').charAt(0).toUpperCase() + session.status.replace('_', ' ').slice(1)}
+                                  </div>
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Session Description */}
+                          {session.description && (
+                            <div className="text-sm text-muted-foreground">
+                              {session.description}
+                            </div>
+                          )}
+                          
+                          {/* Course Session Info */}
+                          {session.is_course_session && (
+                            <div className="text-xs text-muted-foreground bg-blue-50 p-2 rounded">
+                              📅 This session shows when the course begins, not when students enrolled
+                              {!session.has_enrollments && (
+                                <div className="mt-1 text-orange-600 font-medium">
+                                  ⚠️ No students enrolled yet
+                                </div>
+                              )}
+                              {session.status === 'completed' && (
+                                <div className="mt-1 text-green-600 font-medium">
+                                  ✅ Course completed
+                                </div>
+                              )}
+                              {session.status === 'cancelled' && (
+                                <div className="mt-1 text-red-600 font-medium">
+                                  ❌ Course cancelled
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex flex-col gap-2 ml-4">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedSession(session);
+                              setShowSessionDetails(true);
+                            }}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          
+                          {/* For course-based sessions, show different actions */}
+                          {session.is_course_session ? (
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => window.location.href = '#courses'}
+                              >
+                                <BookOpen className="h-4 w-4" />
+                              </Button>
+                              {session.has_enrollments ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => window.location.href = '#students'}
+                                >
+                                  <Users className="h-4 w-4" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => window.location.href = '#courses'}
+                                  className="text-orange-600 border-orange-200 hover:bg-orange-50"
+                                >
+                                  <Plus className="h-4 w-4" />
+                                  <span className="ml-1">Promote</span>
+                                </Button>
+                              )}
+                              
+                              {/* Session Management Actions for Course Sessions */}
+                              {session.status !== 'completed' && session.status !== 'cancelled' && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleCourseSessionAction(session, 'complete')}
+                                    className="text-green-600 border-green-200 hover:bg-green-50"
+                                  >
+                                    <CheckCircle className="h-4 w-4" />
+                                    <span className="ml-1">Complete</span>
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => handleCourseSessionAction(session, 'cancel')}
+                                  >
+                                    <X className="h-4 w-4" />
+                                    <span className="ml-1">Cancel</span>
+                                  </Button>
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {session.status === 'scheduled' && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleSessionAction(session.id, 'start')}
+                                  >
+                                    <Play className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => openRescheduleDialog(session)}
+                                  >
+                                    <RefreshCw className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={() => handleSessionAction(session.id, 'cancel')}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </>
+                              )}
+                              
+                              {session.status === 'in_progress' && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleSessionAction(session.id, 'complete')}
+                                >
+                                  <CheckCircle className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Session Details Dialog */}
+      <Dialog open={showSessionDetails} onOpenChange={setShowSessionDetails}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Session Details</DialogTitle>
+          </DialogHeader>
+          
+          {selectedSession && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Title</Label>
+                  <div className="text-sm">{selectedSession.title || 'Class Session'}</div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Type</Label>
+                  <div className="text-sm">
+                    {selectedSession.is_course_session ? (
+                      <Badge variant="outline" className="bg-blue-100 text-blue-800">
+                        <BookOpen className="h-3 w-3 mr-1" />
+                        Course Session
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="bg-green-100 text-green-800">
+                        <Calendar className="h-3 w-3 mr-1" />
+                        Scheduled Class
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Start Time</Label>
+                  <div className="text-sm">
+                    {selectedSession.is_course_session 
+                      ? `${formatDateTime(selectedSession.start_time).date} at ${formatDateTime(selectedSession.start_time).time}`
+                      : `${formatDateTime(selectedSession.start_time).date} at ${formatDateTime(selectedSession.start_time).time}`
+                    }
+                  </div>
+                </div>
+                {selectedSession.is_course_session && (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium text-muted-foreground">Course Start</Label>
+                    <div className="text-sm">
+                      <Badge variant="outline" className="bg-blue-100 text-blue-800">
+                        {formatDateTime(selectedSession.start_time).date} at {formatDateTime(selectedSession.start_time).time}
+                      </Badge>
+                    </div>
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Duration</Label>
+                  <div className="text-sm">{selectedSession.duration_minutes} minutes</div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Student</Label>
+                  <div className="text-sm">{selectedSession.student_profile.full_name}</div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Course</Label>
+                  <div className="text-sm">{selectedSession.course.title}</div>
+                </div>
+              </div>
+              
+              {selectedSession.description && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Description</Label>
+                  <div className="text-sm">{selectedSession.description}</div>
+                </div>
+              )}
+              
+              {selectedSession.notes && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Course Details</Label>
+                  <div className="text-sm">{selectedSession.notes}</div>
+                </div>
+              )}
+              
+              {selectedSession.is_course_session && selectedSession.enrollment_count > 1 && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Total Enrollments</Label>
+                  <div className="text-sm">
+                    <Badge variant="outline" className="bg-purple-100 text-purple-800">
+                      {selectedSession.enrollment_count} student{selectedSession.enrollment_count !== 1 ? 's' : ''} enrolled
+                    </Badge>
+                  </div>
+                </div>
+              )}
+              
+              {selectedSession.meeting_link && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-muted-foreground">Meeting Link</Label>
+                  <div className="text-sm">
+                    <a href={selectedSession.meeting_link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                      {selectedSession.meeting_link}
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reschedule Dialog */}
+      <Dialog open={showRescheduleDialog} onOpenChange={setShowRescheduleDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reschedule Session</DialogTitle>
+            <DialogDescription>
+              Update the time and add any notes for this session.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="start_time">Start Time</Label>
+              <Input
+                id="start_time"
+                type="datetime-local"
+                value={rescheduleData.start_time}
+                onChange={(e) => setRescheduleData(prev => ({ ...prev, start_time: e.target.value }))}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="end_time">End Time</Label>
+              <Input
+                id="end_time"
+                type="datetime-local"
+                value={rescheduleData.end_time}
+                onChange={(e) => setRescheduleData(prev => ({ ...prev, end_time: e.target.value }))}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="notes">Notes</Label>
+              <Textarea
+                id="notes"
+                placeholder="Add any notes about the rescheduling..."
+                value={rescheduleData.notes}
+                onChange={(e) => setRescheduleData(prev => ({ ...prev, notes: e.target.value }))}
+              />
+            </div>
+          </div>
+          
+          <div className="flex justify-end gap-2 pt-4">
+            <Button 
+              variant="outline" 
+              onClick={() => setShowRescheduleDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={() => handleSessionAction(selectedSession?.id, 'reschedule', rescheduleData)}
+            >
+              Reschedule
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Availability Management Dialog */}
+      <Dialog open={showAvailabilityDialog} onOpenChange={setShowAvailabilityDialog}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Manage Your Weekly Availability</DialogTitle>
+            <DialogDescription>
+              Set your available time slots for each day of the week. Students will be able to book sessions within these slots.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-6">
+            {/* Timezone Selection */}
+            <div className="space-y-2">
+              <Label htmlFor="timezone">Your Timezone</Label>
+              <Select
+                value={availabilityData.timezone}
+                onValueChange={(value) => setAvailabilityData(prev => ({ ...prev, timezone: value }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select timezone" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Asia/Kolkata">Asia/Kolkata (IST)</SelectItem>
+                  <SelectItem value="Asia/Dubai">Asia/Dubai (GST)</SelectItem>
+                  <SelectItem value="Asia/Singapore">Asia/Singapore (SGT)</SelectItem>
+                  <SelectItem value="Europe/London">Europe/London (GMT)</SelectItem>
+                  <SelectItem value="America/New_York">America/New_York (EST)</SelectItem>
+                  <SelectItem value="America/Los_Angeles">America/Los_Angeles (PST)</SelectItem>
+                  <SelectItem value="Australia/Sydney">Australia/Sydney (AEDT)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Weekly Schedule */}
+            <div className="space-y-4">
+              <Label className="text-base font-medium">Weekly Schedule</Label>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
+                {Object.entries(availabilityData.weekly_schedule).map(([day, schedule]) => (
+                  <Card key={day} className={`${schedule.available ? 'border-blue-200 bg-blue-50' : 'border-gray-200 bg-gray-50'}`}>
+                    <CardContent className="p-4">
+                      <div className="space-y-3">
+                        {/* Day Header with Toggle */}
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-semibold text-sm capitalize text-gray-700">
+                            {day}
+                          </h4>
+                          <Checkbox
+                            checked={schedule.available}
+                            onCheckedChange={() => handleDayToggle(day)}
+                          />
+                        </div>
+                        
+                        {/* Time Slots */}
+                        {schedule.available && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-medium text-gray-600">Time Slots</span>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openTimeSlotDialog(day)}
+                                className="h-6 px-2 text-xs"
+                              >
+                                <Plus className="h-3 w-3" />
+                                Add
+                              </Button>
+                            </div>
+                            
+                            {schedule.slots && schedule.slots.length > 0 ? (
+                              <div className="space-y-1">
+                                {schedule.slots.map((slot, slotIndex) => (
+                                  <div key={slotIndex} className="flex items-center justify-between bg-white rounded px-2 py-1 border text-xs">
+                                    <span className="text-blue-700 font-medium">
+                                      {slot.start} - {slot.end}
+                                    </span>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => removeTimeSlot(day, slotIndex)}
+                                      className="h-4 w-4 p-0 text-red-500 hover:text-red-700"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-gray-500 italic text-center py-2">
+                                No time slots set
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-end gap-3 pt-4 border-t">
+              <Button 
+                variant="outline" 
+                onClick={() => setShowAvailabilityDialog(false)}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={saveAvailability}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                Save Availability
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Time Slot Dialog */}
+      <Dialog open={showTimeSlotDialog} onOpenChange={setShowTimeSlotDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Time Slot for {editingDay ? editingDay.charAt(0).toUpperCase() + editingDay.slice(1) : ''}</DialogTitle>
+            <DialogDescription>
+              Set the start and end time for this availability slot.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="start_time">Start Time</Label>
+                <Input
+                  id="start_time"
+                  type="time"
+                  value={timeSlotData.start}
+                  onChange={(e) => setTimeSlotData(prev => ({ ...prev, start: e.target.value }))}
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="end_time">End Time</Label>
+                <Input
+                  id="end_time"
+                  type="time"
+                  value={timeSlotData.end}
+                  onChange={(e) => setTimeSlotData(prev => ({ ...prev, end: e.target.value }))}
+                />
+              </div>
+            </div>
+            
+            <div className="flex justify-end gap-2 pt-4">
+              <Button 
+                variant="outline" 
+                onClick={() => setShowTimeSlotDialog(false)}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={addTimeSlot}
+                disabled={!timeSlotData.start || !timeSlotData.end}
+              >
+                Add Time Slot
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -6121,8 +8691,34 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
 
   const handleDecline = async (requirement: any) => {
     try {
-      // Simply remove the declined requirement from the tutor's view immediately
-      // No database updates, no notifications, no student side changes
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Create or update the requirement_tutor_matches record with declined status
+      // This ensures the requirement is permanently hidden from this tutor's view
+      const { error: matchError } = await supabase
+        .from('requirement_tutor_matches')
+        .upsert({
+          requirement_id: requirement.id,
+          tutor_id: user.id,
+          status: 'not_interested',
+          response_message: null,
+          proposed_rate: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+
+      if (matchError) {
+        console.error("Error declining requirement:", matchError);
+        toast({
+          title: "Error",
+          description: "Failed to decline requirement. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Remove the declined requirement from the tutor's view immediately
       setRequirements(prev => prev.filter(req => req.id !== requirement.id));
 
       // Close any open dialogs
@@ -6131,7 +8727,7 @@ function RequirementsDashboard({ onRefresh, tutorProfile, userProfile, setState 
 
       toast({
         title: "Requirement Declined",
-        description: "The requirement has been declined and removed from your view.",
+        description: "The requirement has been declined and permanently removed from your view.",
       });
 
     } catch (error) {
