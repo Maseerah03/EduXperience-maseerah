@@ -1044,6 +1044,141 @@ export type Database = {
           }
         ]
       }
+      courses: {
+        Row: {
+          id: string
+          title: string
+          description: string | null
+          subject: string
+          level: string
+          duration_hours: number
+          price: number
+          currency: string
+          max_students: number
+          is_active: boolean
+          status: string | null
+          created_at: string
+          updated_at: string
+          tutor_id: string
+          start_time: string | null
+        }
+        Insert: {
+          id?: string
+          title: string
+          description?: string | null
+          subject: string
+          level: string
+          duration_hours: number
+          price: number
+          currency: string
+          max_students: number
+          is_active?: boolean
+          status?: string | null
+          created_at?: string
+          updated_at?: string
+          tutor_id: string
+          start_time?: string | null
+        }
+        Update: {
+          id?: string
+          title?: string
+          description?: string | null
+          subject?: string
+          level?: string
+          duration_hours?: number
+          price?: number
+          currency?: string
+          max_students?: number
+          is_active?: boolean
+          status?: string | null
+          created_at?: string
+          updated_at?: string
+          tutor_id?: string
+          start_time?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "courses_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          }
+        ]
+      }
+      classes: {
+        Row: {
+          id: string
+          course_id: string | null
+          tutor_id: string
+          student_id: string
+          title: string
+          description: string | null
+          start_time: string
+          end_time: string
+          duration_minutes: number
+          status: string
+          meeting_link: string | null
+          notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          course_id?: string | null
+          tutor_id: string
+          student_id: string
+          title: string
+          description?: string | null
+          start_time: string
+          end_time: string
+          duration_minutes: number
+          status: string
+          meeting_link?: string | null
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          course_id?: string | null
+          tutor_id?: string
+          student_id?: string
+          title?: string
+          description?: string | null
+          start_time?: string
+          end_time?: string
+          duration_minutes?: number
+          status?: string
+          meeting_link?: string | null
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "classes_course_id_fkey"
+            columns: ["course_id"]
+            isOneToOne: false
+            referencedRelation: "courses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "classes_tutor_id_fkey"
+            columns: ["tutor_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          },
+          {
+            foreignKeyName: "classes_student_id_fkey"
+            columns: ["student_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["user_id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never

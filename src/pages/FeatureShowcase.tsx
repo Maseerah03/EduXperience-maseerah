@@ -7,7 +7,6 @@ import {
   Star, 
   CreditCard, 
   TrendingUp, 
-  Shield,
   Upload,
   MessageSquare
 } from "lucide-react";
@@ -106,22 +105,6 @@ export default function FeatureShowcase() {
               </Link>
             </CardContent>
           </Card>
-
-          {/* Admin Panel */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader className="text-center">
-              <Shield className="h-12 w-12 text-red-600 mx-auto mb-2" />
-              <CardTitle>Admin Panel</CardTitle>
-            </CardHeader>
-            <CardContent className="text-center">
-              <p className="text-gray-600 mb-4">
-                Full admin dashboard with real-time moderation tools
-              </p>
-              <Link to="/admin/dashboard">
-                <Button className="w-full">Access Admin Panel</Button>
-              </Link>
-            </CardContent>
-          </Card>
         </div>
 
         {/* Testing Instructions */}
@@ -134,7 +117,7 @@ export default function FeatureShowcase() {
               <h3 className="font-semibold text-blue-900 mb-2">Step 1: Create Test Users</h3>
               <p className="text-blue-800">
                 Use the registration form to create multiple users with different roles. 
-                Each user will appear in the admin dashboard in real-time.
+                Each user will appear in the system in real-time.
               </p>
             </div>
 
@@ -142,7 +125,7 @@ export default function FeatureShowcase() {
               <h3 className="font-semibold text-green-900 mb-2">Step 2: Upload Content</h3>
               <p className="text-green-800">
                 Login as tutors and upload various types of educational content. 
-                All content will appear in the admin dashboard for moderation.
+                All content will be available for students to access.
               </p>
             </div>
 
@@ -150,22 +133,22 @@ export default function FeatureShowcase() {
               <h3 className="font-semibold text-yellow-900 mb-2">Step 3: Submit Reviews</h3>
               <p className="text-yellow-800">
                 Login as students and leave reviews for tutors. 
-                Reviews will appear in the admin dashboard for approval.
+                Reviews will help other students make informed decisions.
               </p>
             </div>
 
             <div className="bg-purple-50 p-4 rounded-lg">
-              <h3 className="font-semibold text-purple-900 mb-2">Step 4: Monitor Admin Dashboard</h3>
+              <h3 className="font-semibold text-purple-900 mb-2">Step 4: Test Platform Features</h3>
               <p className="text-purple-800">
-                Open the admin dashboard in another tab and watch real-time updates 
-                as users register, upload content, and submit reviews.
+                Explore the platform features and see how everything works together 
+                to create a seamless learning experience.
               </p>
             </div>
 
             <div className="text-center mt-6">
-              <Link to="/admin/dashboard">
+              <Link to="/signup-choice">
                 <Button size="lg" className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700">
-                  🎯 Start Testing Admin Dashboard
+                  🎯 Start Testing Platform Features
                 </Button>
               </Link>
             </div>

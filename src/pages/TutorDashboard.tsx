@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import VerificationStatus from "@/components/verification/VerificationStatus";
+
 import CourseManagement from "@/components/CourseManagement";
 
 import { getPendingTutorProfile, clearPendingTutorProfile } from "@/lib/profile-creation";
@@ -1278,7 +1278,7 @@ export default function TutorDashboard() {
     { label: "Schedule", icon: <Calendar />, id: "schedule" },
     { label: "Messages", icon: <MessageCircle />, id: "messages", badge: unreadCount > 0 ? unreadCount : undefined },
     { label: "Earnings", icon: <Wallet />, id: "earnings" },
-    { label: "Verification", icon: <Shield />, id: "verification" },
+    
     { label: "Help", icon: <HelpCircle />, id: "help" },
   ];
 
@@ -1388,17 +1388,7 @@ export default function TutorDashboard() {
               <HelpSupport />
             )}
 
-            {state.activeTab === "verification" && (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-bold">Verification</h2>
-                </div>
-                <VerificationStatus 
-                  userType="tutor" 
-                  onStartVerification={() => navigate('/verification')} 
-                />
-              </div>
-            )}
+
           </main>
         </div>
       </SidebarProvider>
@@ -1836,17 +1826,7 @@ function DashboardHome({
             Edit Profile
           </Button>
           
-          {/* Verification Button */}
-          {!tutorProfile?.verified && (
-            <Button 
-              variant="default"
-              onClick={() => navigate('/verification')}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              <Shield className="h-4 w-4 mr-2" />
-              Get Verified
-            </Button>
-          )}
+
         </div>
       </section>
 
@@ -2341,177 +2321,9 @@ function DashboardHome({
         )}
       </section>
 
-      {/* Courses Overview */}
-      <section>
-        <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <BookOpen className="h-5 w-5 text-blue-600" />
-          Your Courses
-        </h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Create New Course Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow border-dashed border-2 border-gray-300">
-            <CardContent className="p-6">
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <Plus className="h-8 w-8 text-blue-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Create New Course</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Start a new course to attract more students
-                </p>
-                <Button 
-                  variant="outline" 
-                  size="sm"
-                  onClick={() => setState(prev => ({ ...prev, activeTab: "courses" }))}
-                >
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Course
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* View All Courses Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow">
-            <CardContent className="p-6">
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <BookOpen className="h-8 w-8 text-green-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Manage Courses</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  View and edit your existing courses
-                </p>
-                <Button 
-                  variant="outline" 
-                  size="sm"
-                  onClick={() => setState(prev => ({ ...prev, activeTab: "courses" }))}
-                >
-                  <BookOpen className="h-4 w-4 mr-2" />
-                  View Courses
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* Course Analytics Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow">
-            <CardContent className="p-6">
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <BarChart3 className="h-8 w-8 text-purple-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Course Analytics</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Track performance and student engagement
-                </p>
-                <Button variant="outline" size="sm">
-                  <BarChart3 className="h-4 w-4 mr-2" />
-                  View Analytics
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
 
-      {/* Sample Content & Teaching Materials */}
-      <section>
-        <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <BookOpen className="h-5 w-5 text-green-600" />
-          Sample Content & Teaching Materials
-        </h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Teaching Videos Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Play className="h-5 w-5 text-blue-600" />
-                Teaching Videos
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <Play className="h-8 w-8 text-blue-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Upload Teaching Videos</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Share sample lessons to showcase your teaching style
-                </p>
-                <Button variant="outline" size="sm">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Video
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Study Materials Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-red-600" />
-                Study Materials
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <FileText className="h-8 w-8 text-red-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Upload Study Materials</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Share notes, practice problems, and formula sheets
-                </p>
-                <Button variant="outline" size="sm">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Material
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Student Work Examples Card */}
-          <Card className="shadow-soft hover:shadow-medium transition-shadow">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Award className="h-5 w-5 text-purple-600" />
-                Student Work Examples
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-6">
-                <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <Award className="h-8 w-8 text-purple-600" />
-                </div>
-                <h4 className="font-semibold text-gray-900 mb-2">Showcase Student Success</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Display examples of excellent student work and projects
-                </p>
-                <Button variant="outline" size="sm">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Example
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Content Management Actions */}
-        <div className="mt-6 text-center">
-          <Button variant="outline" className="mr-3">
-            <Settings className="h-4 w-4 mr-2" />
-            Manage Content
-          </Button>
-          <Button variant="outline">
-            <Eye className="h-4 w-4 mr-2" />
-            Preview Profile
-          </Button>
-        </div>
-      </section>
 
       {/* Contact Information Management */}
       <section>
@@ -2709,276 +2521,7 @@ function DashboardHome({
         </div>
       </section>
 
-      {/* Content Management Forms */}
-      <section>
-        <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <BookOpen className="h-5 w-5 text-green-600" />
-          Content Management
-        </h3>
-        
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Teaching Videos Form */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Play className="h-5 w-5 text-blue-600" />
-                Add Teaching Video
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="space-y-4">
-                <div>
-                  <Label htmlFor="videoTitle">Video Title</Label>
-                  <Input
-                    id="videoTitle"
-                    placeholder="e.g., Introduction to Calculus"
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="videoDescription">Description</Label>
-                  <Textarea
-                    id="videoDescription"
-                    placeholder="Brief description of the video content..."
-                    className="mt-1"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="videoDuration">Duration (HH:MM)</Label>
-                    <Input
-                      id="videoDuration"
-                      placeholder="15:30"
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="videoFile">Video File</Label>
-                    <Input
-                      id="videoFile"
-                      type="file"
-                      accept="video/*"
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label htmlFor="videoThumbnail">Thumbnail Image</Label>
-                  <Input
-                    id="videoThumbnail"
-                    type="file"
-                    accept="image/*"
-                    className="mt-1"
-                  />
-                </div>
-                <Button type="submit" className="w-full">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Upload Video
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
 
-          {/* Study Materials Form */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <FileText className="h-5 w-5 text-red-600" />
-                Add Study Material
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="space-y-4">
-                <div>
-                  <Label htmlFor="materialTitle">Material Title</Label>
-                  <Input
-                    id="materialTitle"
-                    placeholder="e.g., Calculus Notes"
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="materialDescription">Description</Label>
-                  <Textarea
-                    id="materialDescription"
-                    placeholder="Brief description of the material..."
-                    className="mt-1"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="materialFile">File</Label>
-                    <Input
-                      id="materialFile"
-                      type="file"
-                      accept=".pdf,.doc,.docx,.ppt,.pptx"
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="materialType">Type</Label>
-                    <Select>
-                      <SelectTrigger className="mt-1">
-                        <SelectValue placeholder="Select type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="notes">Notes</SelectItem>
-                        <SelectItem value="practice_problems">Practice Problems</SelectItem>
-                        <SelectItem value="formula_sheet">Formula Sheet</SelectItem>
-                        <SelectItem value="assignment">Assignment</SelectItem>
-                        <SelectItem value="other">Other</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <Button type="submit" className="w-full">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Upload Material
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-
-          {/* Student Work Examples Form */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Award className="h-5 w-5 text-purple-600" />
-                Add Student Work Example
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="space-y-4">
-                <div>
-                  <Label htmlFor="workTitle">Work Title</Label>
-                  <Input
-                    id="workTitle"
-                    placeholder="e.g., Calculus Project - Optimization"
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="workDescription">Description</Label>
-                  <Textarea
-                    id="workDescription"
-                    placeholder="Description of the student's work and achievements..."
-                    className="mt-1"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="workSubject">Subject</Label>
-                    <Input
-                      id="workSubject"
-                      placeholder="e.g., Calculus"
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="workGrade">Grade/Score</Label>
-                    <Input
-                      id="workGrade"
-                      placeholder="e.g., A+"
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label htmlFor="workFile">Work File/Image</Label>
-                  <Input
-                    id="workFile"
-                    type="file"
-                    accept=".pdf,.doc,.docx,image/*"
-                    className="mt-1"
-                  />
-                </div>
-                <Button type="submit" className="w-full">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Example
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-
-          {/* Certificates & Achievements Form */}
-          <Card className="shadow-soft">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Shield className="h-5 w-5 text-green-600" />
-                Add Certificate/Achievement
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="space-y-4">
-                <div>
-                  <Label htmlFor="certTitle">Title</Label>
-                  <Input
-                    id="certTitle"
-                    placeholder="e.g., Teaching Certification"
-                    className="mt-1"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="certDescription">Description</Label>
-                  <Textarea
-                    id="certDescription"
-                    placeholder="Brief description..."
-                    className="mt-1"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="certType">Type</Label>
-                    <Select>
-                      <SelectTrigger className="mt-1">
-                        <SelectValue placeholder="Select type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="teaching">Teaching</SelectItem>
-                        <SelectItem value="subject_mastery">Subject Mastery</SelectItem>
-                        <SelectItem value="professional_development">Professional Development</SelectItem>
-                        <SelectItem value="academic">Academic</SelectItem>
-                        <SelectItem value="other">Other</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label htmlFor="certOrganization">Issuing Organization</Label>
-                    <Input
-                      id="certOrganization"
-                      placeholder="e.g., National Teaching Board"
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="certIssueDate">Issue Date</Label>
-                    <Input
-                      id="certIssueDate"
-                      type="date"
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="certFile">Certificate File</Label>
-                    <Input
-                      id="certFile"
-                      type="file"
-                      accept=".pdf,.jpg,.png"
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
-                <Button type="submit" className="w-full">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Certificate
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
 
       {/* Quick Actions */}
       <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -4490,11 +4033,7 @@ function ProfileManagement({
         </CardContent>
       </Card>
 
-      {/* Verification Status */}
-      <VerificationStatus 
-        userType="tutor" 
-        onStartVerification={() => navigate('/verification')} 
-      />
+
 
       <Card>
         <CardHeader>
@@ -5891,21 +5430,7 @@ function ProfileEditDialog({
               </Button>
               
               {/* Verification Button */}
-              {!tutorProfile?.verified && (
-                <Button 
-                  type="button" 
-                  variant="default" 
-                  size="sm" 
-                  onClick={() => {
-                    onClose();
-                    navigate('/verification');
-                  }}
-                  className="bg-blue-600 hover:bg-blue-700 text-white"
-                >
-                  <Shield className="h-4 w-4 mr-2" />
-                  Get Verified
-                </Button>
-              )}
+
               
               {/* Verification Status Badge */}
               {tutorProfile?.verified && (

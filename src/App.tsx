@@ -20,6 +20,10 @@ import FeatureShowcase from "@/pages/FeatureShowcase";
 import VerificationPage from "@/pages/VerificationPage";
 import VerificationStatus from "@/components/verification/VerificationStatus";
 import PricingPage from '@/pages/PricingPage';
+import Tutors from '@/pages/Tutors';
+import Institutions from '@/pages/Institutions';
+import HowItWorks from '@/pages/HowItWorks';
+import About from '@/pages/About';
 
 function App() {
   return (
@@ -50,6 +54,10 @@ function App() {
         <Route path="/verification" element={<VerificationPage userType="tutor" />} />
         <Route path="/verification-status" element={<VerificationStatus userType="tutor" />} />
         <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/tutors" element={<Tutors />} />
+        <Route path="/institutions" element={<Institutions />} />
+        <Route path="/how-it-works" element={<HowItWorks />} />
+        <Route path="/about" element={<About />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
       <Toaster />

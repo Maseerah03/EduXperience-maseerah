@@ -76,7 +76,7 @@ interface BookedSession {
   course_name: string;
 }
 
-export default function MyClasses() {
+export default function MyClasses({ onNavigateToBookSessions }: { onNavigateToBookSessions?: () => void }) {
   const { toast } = useToast();
   
   // Helper function to get status color for course status
@@ -299,12 +299,68 @@ export default function MyClasses() {
   };
 
   const formatTime = (dateString: string): string => {
-    const date = new Date(dateString);
-    return date.toLocaleTimeString('en-US', { 
-      hour: 'numeric', 
-      minute: '2-digit',
-      hour12: true 
-    });
+    try {
+      const date = new Date(dateString);
+      // Check if the date is valid
+      if (isNaN(date.getTime())) {
+        console.warn('Invalid date string:', dateString);
+        return 'Invalid time';
+      }
+      
+      // Format time in user's local timezone
+      return date.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+    } catch (error) {
+      console.error('Error formatting time:', error, dateString);
+      return 'Invalid time';
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        console.warn('Invalid date string:', dateString);
+        return 'Invalid date';
+      }
+      
+      return date.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+    } catch (error) {
+      console.error('Error formatting date:', error, dateString);
+      return 'Invalid date';
+    }
+  };
+
+  const formatDateTime = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        console.warn('Invalid date string:', dateString);
+        return 'Invalid date/time';
+      }
+      
+      return date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+    } catch (error) {
+      console.error('Error formatting date/time:', error, dateString);
+      return 'Invalid date/time';
+    }
   };
 
   const getStatusIcon = (status: string) => {
@@ -335,14 +391,6 @@ export default function MyClasses() {
       default:
         return 'bg-gray-100 text-gray-800 border-gray-200';
     }
-  };
-
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
   };
 
   if (loading) {
@@ -552,7 +600,7 @@ export default function MyClasses() {
                 Book one-on-one sessions with tutors to get personalized help with your courses.
               </p>
               <Button 
-                onClick={() => window.location.href = '/student-dashboard?tab=book-sessions'}
+                onClick={onNavigateToBookSessions || (() => window.location.href = '/student-dashboard?tab=book-sessions')}
                 className="bg-blue-600 hover:bg-blue-700"
               >
                 Book a Session
@@ -580,6 +628,15 @@ export default function MyClasses() {
                           <User className="h-4 w-4" />
                           <span>{session.tutor_name}</span>
                         </div>
+                      </div>
+                      {/* Additional time information for clarity */}
+                      <div className="mt-1 text-xs text-gray-500">
+                        <span>Session: {formatDateTime(session.start_time)}</span>
+                        {process.env.NODE_ENV === 'development' && (
+                          <div className="mt-1 text-xs text-gray-400">
+                            <span>Raw: {session.start_time} | Local: {new Date(session.start_time).toString()}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <Badge className={`text-xs ${getSessionStatusColor(session.status)}`}>

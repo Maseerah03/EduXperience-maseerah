@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
-import { VerificationService } from '@/lib/verification-service';
+import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -11,23 +11,41 @@ import {
   CheckCircle, 
   XCircle, 
   Clock, 
-  AlertTriangle,
   FileText,
-  Users,
-  BookOpen,
-  ArrowRight
+  Upload,
+  AlertCircle
 } from 'lucide-react';
+import DocumentUpload from './DocumentUpload';
 
 interface VerificationStatusProps {
   userType: 'tutor' | 'institute';
   onStartVerification?: () => void;
 }
 
+interface VerificationRequest {
+  id: string;
+  status: 'pending' | 'verified' | 'rejected';
+  created_at: string;
+  updated_at: string;
+  rejection_reason?: string;
+}
+
+interface VerificationDocument {
+  id: string;
+  document_type: string;
+  document_name: string;
+  file_url: string;
+  is_verified: boolean;
+  uploaded_at: string;
+}
+
 export default function VerificationStatus({ userType, onStartVerification }: VerificationStatusProps) {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [verificationRequest, setVerificationRequest] = useState<any>(null);
+  const [verificationRequest, setVerificationRequest] = useState<VerificationRequest | null>(null);
+  const [documents, setDocuments] = useState<VerificationDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [showUploadForm, setShowUploadForm] = useState(false);
 
   useEffect(() => {
     checkVerificationStatus();
@@ -36,17 +54,38 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
   const checkVerificationStatus = async () => {
     try {
       setIsLoading(true);
-      const { data: { user } } = await import('@/integrations/supabase/client').then(m => m.supabase.auth.getUser());
+      const { data: { user } } = await supabase.auth.getUser();
       
       if (!user) {
         navigate('/login');
         return;
       }
 
-      const result = await VerificationService.getUserVerificationRequest(user.id);
-      
-      if (result.success) {
-        setVerificationRequest(result.request);
+      // Get verification request
+      const { data: request, error: requestError } = await supabase
+        .from('verification_requests')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('user_type', userType)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (requestError && requestError.code !== 'PGRST116') {
+        console.error('Error fetching verification request:', requestError);
+      } else if (request) {
+        setVerificationRequest(request);
+        
+        // Get documents for this request
+        const { data: docs, error: docsError } = await supabase
+          .from('verification_documents')
+          .select('*')
+          .eq('verification_request_id', request.id)
+          .order('uploaded_at', { ascending: false });
+
+        if (!docsError && docs) {
+          setDocuments(docs);
+        }
       }
     } catch (error) {
       console.error('Error checking verification status:', error);
@@ -68,15 +107,6 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending': return 'text-yellow-600';
-      case 'verified': return 'text-green-600';
-      case 'rejected': return 'text-red-600';
-      default: return 'text-gray-600';
-    }
-  };
-
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'pending': return <Clock className="h-8 w-8 text-yellow-600" />;
@@ -89,43 +119,43 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
   const getStatusMessage = (status: string) => {
     switch (status) {
       case 'pending':
-        return "Your verification request is currently under review. Our team will examine your documents and references within 2-3 business days.";
+        return "Your verification request is currently under review. Our team will examine your documents within 2-3 business days.";
       case 'verified':
-        return "Congratulations! Your account has been verified. You now have access to all platform features and can start accepting students.";
+        return "Congratulations! Your account has been verified. You now have access to all platform features.";
       case 'rejected':
-        return "Your verification request was not approved. Please review the feedback and submit a new application with updated documents.";
+        return "Your verification request was not approved. Please review the feedback and submit updated documents.";
       default:
-        return `Complete your ${userType} verification to unlock all platform features and start accepting students.`;
+        return `Complete your ${userType} verification by uploading the required documents to unlock all platform features.`;
     }
   };
 
-  const getNextSteps = (status: string) => {
-    switch (status) {
-      case 'pending':
-        return [
-          "Wait for admin review (2-3 business days)",
-          "Check your email for updates",
-          "Ensure all documents are properly uploaded"
-        ];
-      case 'verified':
-        return [
-          "Start creating your profile",
-          "Set your availability and rates",
-          "Begin accepting student requests"
-        ];
-      case 'rejected':
-        return [
-          "Review rejection feedback",
-          "Update required documents",
-          "Submit new verification request"
-        ];
-      default:
-        return [
-          "Upload government ID and academic certificates",
-          "Add professional references",
-          "Complete subject proficiency tests (optional)"
-        ];
+  const getRequiredDocuments = () => {
+    if (userType === 'tutor') {
+      return [
+        { type: 'government_id', name: 'Government ID', description: 'Valid government-issued photo ID' },
+        { type: 'academic_certificate', name: 'Academic Certificates', description: 'Your highest educational qualifications' },
+        { type: 'teaching_certificate', name: 'Teaching Certificates', description: 'Any teaching or training certifications' }
+      ];
+    } else {
+      return [
+        { type: 'registration_certificate', name: 'Registration Certificate', description: 'Official business registration' },
+        { type: 'tax_id', name: 'Tax ID', description: 'Business tax identification number' },
+        { type: 'location_proof', name: 'Location Proof', description: 'Proof of business location' }
+      ];
     }
+  };
+
+  const getDocumentStatus = (documentType: string) => {
+    const doc = documents.find(d => d.document_type === documentType);
+    if (doc) {
+      return doc.is_verified ? 'verified' : 'pending';
+    }
+    return 'missing';
+  };
+
+  const handleUploadComplete = () => {
+    setShowUploadForm(false);
+    checkVerificationStatus(); // Refresh status
   };
 
   if (isLoading) {
@@ -139,6 +169,16 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
           </div>
         </CardContent>
       </Card>
+    );
+  }
+
+  // Show upload form if no verification request exists or if user wants to upload new documents
+  if (showUploadForm || !verificationRequest) {
+    return (
+      <DocumentUpload 
+        userType={userType} 
+        onUploadComplete={handleUploadComplete}
+      />
     );
   }
 
@@ -184,38 +224,52 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
           </div>
         )}
 
-        {/* Next Steps */}
-        <div className="space-y-3">
-          <h4 className="font-medium text-gray-900">Next Steps</h4>
-          <div className="space-y-2">
-            {getNextSteps(verificationRequest?.status).map((step, index) => (
-              <div key={index} className="flex items-center gap-2 text-sm text-gray-600">
-                <ArrowRight className="h-4 w-4 text-blue-500" />
-                <span>{step}</span>
-              </div>
-            ))}
+        {/* Required Documents */}
+        <div className="space-y-4">
+          <h4 className="font-medium text-gray-900">Required Documents</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {getRequiredDocuments().map((doc) => {
+              const status = getDocumentStatus(doc.type);
+              return (
+                <div key={doc.type} className="border rounded-lg p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <h5 className="font-medium text-gray-900">{doc.name}</h5>
+                      <p className="text-sm text-gray-600 mt-1">{doc.description}</p>
+                    </div>
+                    <div className="ml-3">
+                      {status === 'verified' && (
+                        <Badge variant="default" className="flex items-center gap-1">
+                          <CheckCircle className="h-3 w-3" /> Verified
+                        </Badge>
+                      )}
+                      {status === 'pending' && (
+                        <Badge variant="secondary" className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" /> Pending
+                        </Badge>
+                      )}
+                      {status === 'missing' && (
+                        <Badge variant="outline" className="flex items-center gap-1">
+                          <FileText className="h-3 w-3" /> Not Uploaded
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         {/* Action Buttons */}
         <div className="flex justify-center gap-3 pt-4">
-          {!verificationRequest && (
-            <Button 
-              onClick={onStartVerification}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              <FileText className="h-4 w-4 mr-2" />
-              Start Verification
-            </Button>
-          )}
-
           {verificationRequest?.status === 'rejected' && (
             <Button 
-              onClick={onStartVerification}
+              onClick={() => setShowUploadForm(true)}
               variant="outline"
             >
-              <BookOpen className="h-4 w-4 mr-2" />
-              Submit New Application
+              <Upload className="h-4 w-4 mr-2" />
+              Submit Updated Documents
             </Button>
           )}
 
@@ -224,8 +278,18 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
               onClick={() => navigate('/dashboard')}
               className="bg-green-600 hover:bg-green-700"
             >
-              <Users className="h-4 w-4 mr-2" />
+              <CheckCircle className="h-4 w-4 mr-2" />
               Start Teaching
+            </Button>
+          )}
+
+          {verificationRequest?.status === 'pending' && (
+            <Button 
+              onClick={() => setShowUploadForm(true)}
+              variant="outline"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Add More Documents
             </Button>
           )}
         </div>
@@ -234,12 +298,27 @@ export default function VerificationStatus({ userType, onStartVerification }: Ve
         {verificationRequest?.status === 'pending' && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="h-5 w-5 text-blue-600 mt-0.5" />
+              <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
               <div>
                 <h4 className="font-medium text-blue-900">Verification in Progress</h4>
                 <p className="text-sm text-blue-700 mt-1">
                   While your verification is pending, you can still complete your profile and prepare your teaching materials. 
                   Once verified, you'll be able to accept students immediately.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Rejection Reason */}
+        {verificationRequest?.status === 'rejected' && verificationRequest.rejection_reason && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <XCircle className="h-5 w-5 text-red-600 mt-0.5" />
+              <div>
+                <h4 className="font-medium text-red-900">Rejection Reason</h4>
+                <p className="text-sm text-red-700 mt-1">
+                  {verificationRequest.rejection_reason}
                 </p>
               </div>
             </div>

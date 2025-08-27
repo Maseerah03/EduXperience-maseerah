@@ -44,12 +44,7 @@ export const Header = () => {
                 {item.name}
               </Link>
             ))}
-            <Link
-              to="/admin/login"
-              className="text-sm font-medium text-muted-foreground hover:text-primary transition-colors"
-            >
-              Admin Panel
-            </Link>
+
           </nav>
 
           {/* Auth Buttons */}
@@ -89,13 +84,7 @@ export const Header = () => {
                   {item.name}
                 </Link>
               ))}
-              <Link
-                to="/admin/login"
-                className="text-sm font-medium text-muted-foreground hover:text-primary transition-colors px-2 py-1"
-                onClick={() => setIsMenuOpen(false)}
-              >
-                Admin Panel
-              </Link>
+
               <div className="flex flex-col space-y-2 pt-4 border-t">
                 <Link to="/login" onClick={() => setIsMenuOpen(false)}>
                   <Button variant="ghost" size="sm" className="w-full justify-start">

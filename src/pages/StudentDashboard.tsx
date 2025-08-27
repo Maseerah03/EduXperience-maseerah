@@ -1663,7 +1663,7 @@ export default function StudentDashboard() {
             )}
 
             {state.activeTab === "my-classes" && (
-              <MyClasses />
+              <MyClasses onNavigateToBookSessions={() => setState(prev => ({ ...prev, activeTab: "book-sessions" }))} />
             )}
 
             {state.activeTab === "book-sessions" && (

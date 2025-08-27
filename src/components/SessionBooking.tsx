@@ -29,6 +29,7 @@ interface TutorWithAvailability extends TutorProfile {
   profile: Profile;
   courses: Course[];
   availableSlots: AvailableSlot[];
+  timezone?: string;
 }
 
 interface BookingFormData {
@@ -56,6 +57,33 @@ export default function SessionBooking() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [subjects, setSubjects] = useState<string[]>([]);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  // Get current user on component mount
+  useEffect(() => {
+    getCurrentUser();
+  }, []);
+
+  const getCurrentUser = async () => {
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error('Error getting current user:', error);
+        toast({
+          title: "Authentication Error",
+          description: "Please log in again to book sessions.",
+          variant: "destructive"
+        });
+        return;
+      }
+      if (user) {
+        setCurrentUser(user);
+        console.log('Current user ID:', user.id);
+      }
+    } catch (error) {
+      console.error('Error getting current user:', error);
+    }
+  };
 
   // Helper functions
   const formatTime12Hour = (time: string): string => {
@@ -67,6 +95,59 @@ export default function SessionBooking() {
       return `${displayHour}:${minutes} ${ampm}`;
     } catch {
       return time;
+    }
+  };
+
+  const getTimezoneInfo = () => {
+    const now = new Date();
+    return {
+      local: now.toString(),
+      iso: now.toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      offset: now.getTimezoneOffset(),
+      offsetHours: Math.abs(now.getTimezoneOffset() / 60)
+    };
+  };
+
+  const debugTimeConversion = (timeString: string, dateString: string) => {
+    const fullDateTime = `${dateString}T${timeString}:00`;
+    const localDate = new Date(fullDateTime);
+    const utcDate = new Date(fullDateTime + 'Z');
+    
+    console.log('🔍 Time Debug Info:');
+    console.log('  Original time string:', timeString);
+    console.log('  Date string:', dateString);
+    console.log('  Full datetime string:', fullDateTime);
+    console.log('  Local interpretation:', localDate.toString());
+    console.log('  UTC interpretation:', utcDate.toString());
+    console.log('  ISO string (local):', localDate.toISOString());
+    console.log('  ISO string (UTC):', utcDate.toISOString());
+    console.log('  Current timezone:', getTimezoneInfo().timezone);
+    
+    return {
+      local: localDate.toISOString(),
+      utc: utcDate.toISOString()
+    };
+  };
+
+  const convertToLocalTime = (timeString: string, dateString: string, tutorTimezone: string = 'Asia/Kolkata') => {
+    try {
+      // Create a date object in the tutor's timezone
+      const tutorDateTime = new Date(`${dateString}T${timeString}:00`);
+      
+      // Convert to user's local time
+      const localTime = new Date(tutorDateTime.toLocaleString('en-US', { timeZone: tutorTimezone }));
+      
+      // Format the time
+      return localTime.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      });
+    } catch (error) {
+      console.error('Error converting time:', error);
+      return formatTime12Hour(timeString);
     }
   };
 
@@ -174,7 +255,9 @@ export default function SessionBooking() {
       const processedTutors = (tutorsWithDetails || []).map(tutor => {
         console.log('🔍 Processing tutor:', tutor.user_id, 'Profile:', tutor.profile?.full_name);
         
-        const weeklySchedule = tutor.weekly_schedule || {};
+        const weeklySchedule = tutor.availability || {};
+        console.log('🔍 Weekly schedule for', tutor.profile?.full_name, ':', weeklySchedule);
+        
         const availableSlots: AvailableSlot[] = [];
         
         // Generate available slots for the next occurrence of each available day
@@ -187,24 +270,35 @@ export default function SessionBooking() {
           date.setDate(today.getDate() + i);
           const dayName = date.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
           
-                      // Only process this day if we haven't processed it before and it's available
-            if (!processedDays.has(dayName) && weeklySchedule[dayName]?.available && weeklySchedule[dayName].slots) {
-              // Mark this day as processed
-              processedDays.add(dayName);
+          // Only process this day if we haven't processed it before and it's available
+          if (!processedDays.has(dayName) && weeklySchedule[dayName]?.available && weeklySchedule[dayName].slots) {
+            // Mark this day as processed
+            processedDays.add(dayName);
+            
+            console.log(`🔍 Processing ${dayName} for ${tutor.profile?.full_name}:`, weeklySchedule[dayName]);
+            
+            weeklySchedule[dayName].slots.forEach((slot: any) => {
+              console.log(`🔍 Slot data:`, slot);
+              console.log(`🔍 Raw start time: ${slot.start}, Raw end time: ${slot.end}`);
+              console.log(`🔍 Formatted start: ${formatTime12Hour(slot.start)}, Formatted end: ${formatTime12Hour(slot.end)}`);
               
-              weeklySchedule[dayName].slots.forEach((slot: any) => {
-                availableSlots.push({
-                  day: date.toISOString().split('T')[0],
-                  startTime: slot.start,
-                  endTime: slot.end,
-                  formattedStartTime: formatTime12Hour(slot.start),
-                  formattedEndTime: formatTime12Hour(slot.end)
-                });
+              // Debug time conversion
+              const timeDebug = debugTimeConversion(slot.start, date.toISOString().split('T')[0]);
+              console.log(`🔍 Time conversion debug:`, timeDebug);
+              
+              availableSlots.push({
+                day: date.toISOString().split('T')[0],
+                startTime: slot.start,
+                endTime: slot.end,
+                formattedStartTime: convertToLocalTime(slot.start, date.toISOString().split('T')[0], 'Asia/Kolkata'),
+                formattedEndTime: convertToLocalTime(slot.end, date.toISOString().split('T')[0], 'Asia/Kolkata')
               });
-            }
+            });
+          }
         }
 
         console.log(`🔍 Total available slots for ${tutor.profile?.full_name}:`, availableSlots.length);
+        console.log(`🔍 Available slots details:`, availableSlots);
         
         return {
           ...tutor,
@@ -261,8 +355,33 @@ export default function SessionBooking() {
       return;
     }
 
+    if (!currentUser) {
+      toast({
+        title: "Authentication Error",
+        description: "Please log in to book sessions.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     try {
       setSubmitting(true);
+      
+      console.log('Booking session with user ID:', currentUser.id);
+      console.log('Tutor ID:', selectedTutor.user_id);
+      console.log('Course ID:', bookingForm.courseId);
+      console.log('Date:', bookingForm.date);
+      console.log('Start Time:', bookingForm.startTime);
+      console.log('End Time:', bookingForm.endTime);
+      
+      // Validate and format the datetime strings
+      const startDateTime = new Date(`${bookingForm.date}T${bookingForm.startTime}:00`);
+      const endDateTime = new Date(`${bookingForm.date}T${bookingForm.endTime}:00`);
+      
+      console.log('Formatted start time:', startDateTime.toISOString());
+      console.log('Formatted end time:', endDateTime.toISOString());
+      console.log('Local start time:', startDateTime.toString());
+      console.log('Local end time:', endDateTime.toString());
       
       // Create a new class/session record
       const { data: newClass, error: classError } = await supabase
@@ -270,11 +389,11 @@ export default function SessionBooking() {
         .insert({
           course_id: bookingForm.courseId,
           tutor_id: selectedTutor.user_id,
-          student_id: (await supabase.auth.getUser()).data.user?.id,
+          student_id: currentUser.id,
           title: `Session with ${selectedTutor.profile?.full_name}`,
           description: bookingForm.notes || 'Booked session',
-          start_time: `${bookingForm.date}T${bookingForm.startTime}:00`,
-          end_time: `${bookingForm.date}T${bookingForm.endTime}:00`,
+          start_time: startDateTime.toISOString(),
+          end_time: endDateTime.toISOString(),
           duration_minutes: calculateDuration(bookingForm.startTime, bookingForm.endTime),
           status: 'scheduled',
           notes: bookingForm.notes
@@ -283,8 +402,11 @@ export default function SessionBooking() {
         .single();
 
       if (classError) {
+        console.error('Database error:', classError);
         throw classError;
       }
+
+      console.log('Session booked successfully:', newClass);
 
       toast({
         title: "Success!",
@@ -369,6 +491,14 @@ export default function SessionBooking() {
           <p className="text-gray-600 mt-2">
             Browse available tutors and book sessions within their available time slots
           </p>
+          <p className="text-xs text-gray-500 mt-1">
+            All times are displayed in your local timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}
+          </p>
+          {process.env.NODE_ENV === 'development' && (
+            <div className="text-xs text-gray-400 mt-1">
+              <span>Debug: {getTimezoneInfo().local} | Offset: {getTimezoneInfo().offsetHours}h</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -420,7 +550,7 @@ export default function SessionBooking() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-4">
                     <Avatar className="h-12 w-12">
-                      <AvatarImage src={tutor.profile?.avatar_url} />
+                      <AvatarImage src={tutor.profile?.profile_photo_url} />
                       <AvatarFallback>
                         {tutor.profile?.full_name?.charAt(0) || 'T'}
                       </AvatarFallback>
@@ -466,6 +596,9 @@ export default function SessionBooking() {
                 {/* Available Slots */}
                 <div className="mb-6">
                   <h4 className="font-medium text-gray-900 mb-4">Available Time Slots</h4>
+                  <div className="text-xs text-gray-500 mb-3">
+                    ⚠️ Note: Times shown are in the tutor's local timezone. Your booking will be converted to your local time.
+                  </div>
                   <div className="grid gap-3">
                     {tutor.availableSlots.slice(0, 6).map((slot, index) => (
                       <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -529,6 +662,9 @@ export default function SessionBooking() {
                 <div className="space-y-1 text-sm">
                   <div><strong>Date:</strong> {formatDate(bookingForm.date)}</div>
                   <div><strong>Time:</strong> {formatTime12Hour(bookingForm.startTime)} - {formatTime12Hour(bookingForm.endTime)}</div>
+                  <div className="text-xs text-gray-500">
+                    (Tutor's local time: {convertToLocalTime(bookingForm.startTime, bookingForm.date, 'Asia/Kolkata')} - {convertToLocalTime(bookingForm.endTime, bookingForm.date, 'Asia/Kolkata')})
+                  </div>
                   <div><strong>Duration:</strong> {calculateDuration(bookingForm.startTime, bookingForm.endTime)} minutes</div>
                 </div>
               </div>
