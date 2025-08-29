@@ -261,6 +261,9 @@ export default function Login() {
         const beforeProfileCheck = localStorage.getItem('eduxperience_remember_me');
         console.log('Credentials before profile fetch:', beforeProfileCheck ? 'EXIST' : 'NOT FOUND');
         
+        // Check for institution redirect flag first
+        const shouldRedirectToInstitutionDashboard = localStorage.getItem('institution_redirect_to_dashboard');
+        
         // Get user's role and redirect accordingly
         const { data: profileData, error: profileError } = await supabase
           .from('profiles')
@@ -291,8 +294,14 @@ export default function Login() {
               window.location.href = '/tutor-dashboard';
               break;
             case 'institution':
-              // TODO: Add institution dashboard route when available
-              window.location.href = '/';
+              // Check if user should be redirected to institution dashboard
+              if (shouldRedirectToInstitutionDashboard) {
+                console.log('Redirecting to institution dashboard...');
+                localStorage.removeItem('institution_redirect_to_dashboard'); // Clear the flag
+                window.location.href = '/institution-dashboard';
+              } else {
+                window.location.href = '/institution-dashboard';
+              }
               break;
             case 'admin':
               // TODO: Add admin dashboard route when available

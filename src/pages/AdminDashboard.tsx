@@ -31,6 +31,7 @@ import {
   Activity,
   TrendingUp,
   ExternalLink,
+  Building2,
 } from "lucide-react";
 import PricingManagement from '@/components/admin/PricingManagement';
 
@@ -132,6 +133,51 @@ interface Fee {
   updated_at: string;
 }
 
+interface InstitutionSubmission {
+  id: string;
+  user_id: string;
+  email: string;
+  institutionName: string;
+  institutionType: string;
+  registrationNumber: string;
+  submittedAt: string;
+  status: 'pending' | 'under_review' | 'approved' | 'rejected';
+  documents: {
+    businessRegistrationCertificate?: string;
+    educationBoardAffiliationCertificate?: string;
+    fireSafetyCertificate?: string;
+    buildingPlanApproval?: string;
+    panCard?: string;
+    gstCertificate?: string;
+    bankAccountDetails?: string;
+    institutionPhotographs?: string[];
+  };
+  basicInformation: {
+    institutionName: string;
+    institutionType: string;
+    registrationNumber: string;
+    email: string;
+    phone: string;
+    address: string;
+    city: string;
+    state: string;
+    pincode: string;
+    ownerName: string;
+    ownerPhone: string;
+  };
+  // Additional data from other tables
+  institutionDetails?: any; // Facilities, capacity, etc.
+  academicPrograms?: any[]; // Academic programs offered
+  faculty?: any[]; // Faculty and staff information
+  results?: any; // Results and achievements
+  feePolicies?: any; // Fee structure and policies
+  contactVerification?: any; // Contact verification status
+  photos?: any[]; // Institution photos
+  adminNotes?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+}
+
 interface AnalyticsData {
   userGrowth: {
     totalUsers: number;
@@ -178,11 +224,14 @@ export default function AdminDashboard() {
   const [payouts, setPayouts] = useState<Payout[]>([]);
   const [refunds, setRefunds] = useState<Refund[]>([]);
   const [fees, setFees] = useState<Fee[]>([]);
+  const [institutionSubmissions, setInstitutionSubmissions] = useState<InstitutionSubmission[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("verification");
   const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [selectedInstitution, setSelectedInstitution] = useState<InstitutionSubmission | null>(null);
+  const [showInstitutionModal, setShowInstitutionModal] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -314,6 +363,10 @@ export default function AdminDashboard() {
           console.warn('Failed to load fees:', error);
           return null;
         }),
+        loadInstitutionSubmissions().catch(error => {
+          console.warn('Failed to load institution submissions:', error);
+          return null;
+        }),
         loadAnalytics().catch(error => {
           console.warn('Failed to load analytics:', error);
           return null;
@@ -325,7 +378,7 @@ export default function AdminDashboard() {
       // Show success message if at least some data loaded
       const hasAnyData = users.length > 0 || profiles.length > 0 || reviews.length > 0 || 
                          content.length > 0 || transactions.length > 0 || payouts.length > 0 || 
-                         refunds.length > 0 || fees.length > 0;
+                         refunds.length > 0 || fees.length > 0 || institutionSubmissions.length > 0;
       
       console.log('Data loading summary:', {
         users: users.length,
@@ -335,7 +388,8 @@ export default function AdminDashboard() {
         transactions: transactions.length,
         payouts: payouts.length,
         refunds: refunds.length,
-        fees: fees.length
+        fees: fees.length,
+        institutionSubmissions: institutionSubmissions.length
       });
       
       if (hasAnyData) {
@@ -844,6 +898,235 @@ export default function AdminDashboard() {
     }
   };
 
+  const loadInstitutionSubmissions = async () => {
+    try {
+      console.log('Loading institution submissions from database...');
+      
+      // Try to load from multiple possible tables
+      let data = null;
+      let error = null;
+      
+      // First try institution_profiles table
+      const { data: instProfiles, error: instError } = await supabase
+        .from('institution_profiles')
+        .select('*');
+      
+      if (!instError && instProfiles && instProfiles.length > 0) {
+        data = instProfiles;
+        console.log('Found data in institution_profiles table:', instProfiles);
+        
+        // Load ALL related data for each institution
+        for (const profile of instProfiles) {
+          console.log('Loading complete data for institution:', profile.institution_name);
+          
+          // Load documents
+          const { data: documents, error: docError } = await supabase
+            .from('institution_documents')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!docError && documents) {
+            profile.documents = documents;
+            console.log('Loaded documents:', documents.length);
+          }
+          
+          // Load photos
+          const { data: photos, error: photoError } = await supabase
+            .from('institution_photos')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!photoError && photos) {
+            profile.photos = photos;
+            console.log('Loaded photos:', photos.length);
+          }
+          
+          // Load additional institution data from other tables
+          // Load institution details (facilities, etc.)
+          const { data: details, error: detailsError } = await supabase
+            .from('institution_details')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!detailsError && details && details.length > 0) {
+            profile.institutionDetails = details[0];
+            console.log('Loaded institution details');
+          }
+          
+          // Load academic programs
+          const { data: programs, error: programsError } = await supabase
+            .from('institution_academic_programs')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!programsError && programs) {
+            profile.academicPrograms = programs;
+            console.log('Loaded academic programs:', programs.length);
+          }
+          
+          // Load faculty information
+          const { data: faculty, error: facultyError } = await supabase
+            .from('institution_faculty_staff')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!facultyError && faculty) {
+            profile.faculty = faculty;
+            console.log('Loaded faculty:', faculty.length);
+          }
+          
+          // Load results and achievements
+          const { data: results, error: resultsError } = await supabase
+            .from('institution_results_achievements')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!resultsError && results) {
+            profile.results = results;
+            console.log('Loaded results and achievements');
+          }
+          
+          // Load fee policies
+          const { data: fees, error: feesError } = await supabase
+            .from('institution_fee_policies')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!feesError && fees && fees.length > 0) {
+            profile.feePolicies = fees[0];
+            console.log('Loaded fee policies');
+          }
+          
+          // Load contact verification
+          const { data: contact, error: contactError } = await supabase
+            .from('institution_contact_verification')
+            .select('*')
+            .eq('institution_id', profile.id);
+          
+          if (!contactError && contact && contact.length > 0) {
+            profile.contactVerification = contact[0];
+            console.log('Loaded contact verification');
+          }
+        }
+      } else {
+        console.log('No data in institution_profiles, trying profiles table...');
+        
+        // Try profiles table with role = 'institution'
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('role', 'institution');
+        
+        if (!profilesError && profiles && profiles.length > 0) {
+          data = profiles;
+          console.log('Found data in profiles table:', profiles);
+        } else {
+          console.log('No data in profiles table either');
+          error = profilesError || instError;
+        }
+      }
+
+      if (error) {
+        console.warn('Error loading institution profiles:', error);
+        setInstitutionSubmissions([]);
+        return;
+      }
+      
+      console.log('Raw institution profiles from database:', data);
+      
+      // Transform the database data to match our interface
+      const submissions: InstitutionSubmission[] = (data || []).map(profile => {
+        // Handle both institution_profiles and profiles table structures
+        const isInstitutionProfile = 'institution_name' in profile;
+        
+        if (isInstitutionProfile) {
+          // institution_profiles table structure
+          return {
+            id: profile.id,
+            user_id: profile.user_id || 'unknown',
+            email: profile.official_email || 'No email',
+            institutionName: profile.institution_name || 'Unknown Institution',
+            institutionType: profile.institution_type || 'Unknown',
+            registrationNumber: profile.registration_number || 'Unknown',
+            submittedAt: profile.created_at || new Date().toISOString(),
+            status: profile.verified ? 'approved' : 'pending',
+            documents: {
+              businessRegistrationCertificate: profile.documents?.find(d => d.document_type === 'business_registration')?.file_name || 'Not uploaded',
+              educationBoardAffiliationCertificate: profile.documents?.find(d => d.document_type === 'education_board_affiliation')?.file_name || 'Not uploaded',
+              fireSafetyCertificate: profile.documents?.find(d => d.document_type === 'fire_safety')?.file_name || 'Not uploaded',
+              buildingPlanApproval: profile.documents?.find(d => d.document_type === 'building_plan')?.file_name || 'Not uploaded',
+              panCard: profile.pan_number || 'Not provided',
+              gstCertificate: profile.gst_number || 'Not provided',
+              bankAccountDetails: profile.documents?.find(d => d.document_type === 'bank_account')?.file_name || 'Not uploaded',
+              institutionPhotographs: profile.photos?.map(p => p.file_name).join(', ') || 'No photos uploaded'
+            },
+            basicInformation: {
+              institutionName: profile.institution_name || 'Unknown',
+              institutionType: profile.institution_type || 'Unknown',
+              registrationNumber: profile.registration_number || 'Unknown',
+              email: profile.official_email || 'Unknown',
+              phone: profile.primary_contact || 'Unknown',
+              address: profile.complete_address || 'Unknown',
+              city: profile.city || 'Unknown',
+              state: profile.state || 'Unknown',
+              pincode: profile.pin_code || 'Unknown',
+              ownerName: profile.owner_name || 'Unknown',
+              ownerPhone: profile.owner_contact || 'Unknown'
+            },
+            adminNotes: null,
+            reviewedBy: null,
+            reviewedAt: null
+          };
+        } else {
+          // profiles table structure
+          return {
+            id: profile.id,
+            user_id: profile.user_id || 'unknown',
+            email: profile.email || 'No email',
+            institutionName: profile.full_name || 'Unknown Institution',
+            institutionType: 'Institution', // Default type
+            registrationNumber: 'Not provided',
+            submittedAt: profile.created_at || new Date().toISOString(),
+            status: 'pending', // profiles table doesn't have verified field
+            documents: {
+              businessRegistrationCertificate: 'Check documents table',
+              educationBoardAffiliationCertificate: 'Check documents table',
+              fireSafetyCertificate: 'Check documents table',
+              buildingPlanApproval: 'Check documents table',
+              panCard: 'Not provided',
+              gstCertificate: 'Not provided',
+              bankAccountDetails: 'Check documents table',
+              institutionPhotographs: 'Check photos table'
+            },
+            basicInformation: {
+              institutionName: profile.full_name || 'Unknown',
+              institutionType: 'Institution',
+              registrationNumber: 'Not provided',
+              email: profile.email || 'Unknown',
+              phone: profile.phone ? profile.phone.toString() : 'Not provided',
+              address: 'Not provided',
+              city: profile.city || 'Not provided',
+              state: 'Not provided',
+              pincode: 'Not provided',
+              ownerName: 'Not provided',
+              ownerPhone: 'Not provided'
+            },
+            adminNotes: null,
+            reviewedBy: null,
+            reviewedAt: null
+          };
+        }
+      });
+      
+      console.log('Transformed institution submissions:', submissions);
+      setInstitutionSubmissions(submissions);
+      
+    } catch (error) {
+      console.error('Error loading institution submissions:', error);
+      setInstitutionSubmissions([]);
+    }
+  };
+
   const loadAnalytics = async () => {
     try {
       // Since we don't have a dedicated analytics table, we'll calculate metrics from existing data
@@ -1205,6 +1488,123 @@ export default function AdminDashboard() {
       toast({
         title: "Error",
         description: "Failed to update content status",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleInstitutionView = (submission: InstitutionSubmission) => {
+    setSelectedInstitution(submission);
+    setShowInstitutionModal(true);
+  };
+
+  const handleInstitutionApprove = async (submissionId: string) => {
+    try {
+      const submission = institutionSubmissions.find(sub => sub.id === submissionId);
+      if (!submission) throw new Error('Submission not found');
+
+      // Update the submission status
+      const { error } = await supabase
+        .from('institution_submissions')
+        .update({ 
+          status: 'approved',
+          reviewedBy: 'admin',
+          reviewedAt: new Date().toISOString()
+        })
+        .eq('id', submissionId);
+
+      if (error) throw error;
+
+      // Update local state
+      setInstitutionSubmissions(prev => 
+        prev.map(sub => 
+          sub.id === submissionId 
+            ? { ...sub, status: 'approved', reviewedBy: 'admin', reviewedAt: new Date().toISOString() }
+            : sub
+        )
+      );
+
+      // Update database record
+      const { error: updateError } = await supabase
+        .from('institution_profiles')
+        .update({ 
+          verified: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', submissionId);
+
+      if (updateError) {
+        console.warn('Error updating database:', updateError);
+      }
+
+      // Also update the user's verification status
+      await handleUserVerification(submission.user_id, 'approve');
+
+      toast({
+        title: "Success",
+        description: "Institution approved successfully",
+      });
+    } catch (error) {
+      console.error('Error approving institution:', error);
+      toast({
+        title: "Error",
+        description: "Failed to approve institution",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleInstitutionReject = async (submissionId: string) => {
+    try {
+      const submission = institutionSubmissions.find(sub => sub.id === submissionId);
+      if (!submission) throw new Error('Submission not found');
+
+      // Update the submission status
+      const { error } = await supabase
+        .from('institution_submissions')
+        .update({ 
+          status: 'rejected',
+          reviewedBy: 'admin',
+          reviewedAt: new Date().toISOString()
+        })
+        .eq('id', submissionId);
+
+      if (error) throw error;
+
+      // Update local state
+      setInstitutionSubmissions(prev => 
+        prev.map(sub => 
+          sub.id === submissionId 
+            ? { ...sub, status: 'rejected', reviewedBy: 'admin', reviewedAt: new Date().toISOString() }
+            : sub
+        )
+      );
+
+      // Update database record
+      const { error: updateError } = await supabase
+        .from('institution_profiles')
+        .update({ 
+          verified: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', submissionId);
+
+      if (updateError) {
+        console.warn('Error updating database:', updateError);
+      }
+
+      // Also update the user's verification status
+      await handleUserVerification(submission.user_id, 'reject');
+
+      toast({
+        title: "Success",
+        description: "Institution rejected successfully",
+      });
+    } catch (error) {
+      console.error('Error rejecting institution:', error);
+      toast({
+        title: "Error",
+        description: "Failed to reject institution",
         variant: "destructive",
       });
     }
@@ -1834,7 +2234,7 @@ export default function AdminDashboard() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-9 gap-2">
+          <TabsList className="grid w-full grid-cols-10 gap-2">
             <TabsTrigger value="verification" className="flex items-center space-x-2 data-[state=active]:bg-blue-50 data-[state=active]:border-blue-200">
               <Users className="h-4 w-4" />
               <span>Users</span>
@@ -1890,6 +2290,15 @@ export default function AdminDashboard() {
               {paymentStats.pendingRefunds > 0 && (
                 <Badge variant="destructive" className="ml-1 h-5 w-5 p-0 text-xs">
                   {contentStats.pendingRefunds}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="institutions" className="flex items-center space-x-2 data-[state=active]:bg-indigo-50 data-[state=active]:border-indigo-200">
+              <Building2 className="h-4 w-4" />
+              <span>Institutions</span>
+              {institutionSubmissions.filter(sub => sub.status === 'pending').length > 0 && (
+                <Badge variant="destructive" className="ml-1 h-5 w-5 p-0 text-xs">
+                  {institutionSubmissions.filter(sub => sub.status === 'pending').length}
                 </Badge>
               )}
             </TabsTrigger>
@@ -2065,6 +2474,124 @@ export default function AdminDashboard() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Institutions Tab */}
+          <TabsContent value="institutions" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Institution Submissions</CardTitle>
+                    <CardDescription>Review and manage institution registration submissions</CardDescription>
+                  </div>
+                  <div className="flex space-x-2">
+                    <Button
+                      onClick={() => loadInstitutionSubmissions()}
+                      variant="outline"
+                      size="sm"
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Refresh
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        console.log('🔍 Debug: Institution Submissions Data');
+                        console.log('Total submissions:', institutionSubmissions.length);
+                        institutionSubmissions.forEach((sub, index) => {
+                          console.log(`Submission ${index + 1}:`, sub);
+                        });
+                        toast({
+                          title: "Debug Info Logged",
+                          description: `Check console for ${institutionSubmissions.length} institution submissions data`,
+                        });
+                      }}
+                      variant="outline"
+                      size="sm"
+                      className="bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
+                    >
+                      <Eye className="h-4 w-4 mr-2" />
+                      Debug Data
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {institutionSubmissions.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <Building2 className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                      <p>No institution submissions found</p>
+                      
+
+                    </div>
+                  ) : (
+                    institutionSubmissions.map((submission) => (
+                      <div key={submission.id} className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex-1">
+                          <p className="font-medium">{submission.basicInformation.institutionName}</p>
+                          <p className="text-sm text-gray-600">{submission.email}</p>
+                          <p className="text-sm text-gray-500 mt-1">
+                            Type: {submission.basicInformation.institutionType} | 
+                            Reg: {submission.basicInformation.registrationNumber}
+                          </p>
+                          <p className="text-sm text-gray-500">
+                            Submitted: {new Date(submission.submittedAt).toLocaleDateString()}
+                          </p>
+                          <div className="flex items-center space-x-2 mt-2">
+                            <Badge variant="outline">Institution</Badge>
+                            <Badge 
+                              variant={
+                                submission.status === 'approved' ? 'default' : 
+                                submission.status === 'rejected' ? 'destructive' : 
+                                submission.status === 'under_review' ? 'secondary' : 'secondary'
+                              }
+                            >
+                              {submission.status === 'approved' ? '✅ Approved' : 
+                               submission.status === 'rejected' ? '❌ Rejected' : 
+                               submission.status === 'under_review' ? '⏳ Under Review' : '⏳ Pending'}
+                            </Badge>
+                          </div>
+                        </div>
+                        
+                        <div className="flex space-x-2 ml-4">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleInstitutionView(submission)}
+                          >
+                            <Eye className="h-4 w-4 mr-2" />
+                            Review
+                          </Button>
+                          
+                          {submission.status === 'pending' && (
+                            <>
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={() => handleInstitutionApprove(submission.id)}
+                                className="bg-green-600 hover:bg-green-700"
+                              >
+                                <CheckCircle className="h-4 w-4 mr-2" />
+                                Approve
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => handleInstitutionReject(submission.id)}
+                              >
+                                <XCircle className="h-4 w-4 mr-2" />
+                                Reject
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -2943,6 +3470,398 @@ export default function AdminDashboard() {
                       <XCircle className="h-4 w-4 mr-2" />
                       Reject
                     </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+        
+        {/* Institution View Modal */}
+        <Dialog open={showInstitutionModal} onOpenChange={setShowInstitutionModal}>
+          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Institution Submission Details</DialogTitle>
+            </DialogHeader>
+            {selectedInstitution && (
+              <div className="space-y-6">
+                {/* Institution Header */}
+                <div className="flex items-center space-x-4">
+                  <div className="w-20 h-20 rounded-full bg-indigo-100 flex items-center justify-center">
+                    <Building2 className="h-10 w-10 text-indigo-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold">{selectedInstitution.basicInformation.institutionName}</h3>
+                    <p className="text-gray-600">{selectedInstitution.email}</p>
+                    <Badge 
+                      variant={
+                        selectedInstitution.status === 'approved' ? 'default' : 
+                        selectedInstitution.status === 'rejected' ? 'destructive' : 'secondary'
+                      }
+                      className="mt-2"
+                    >
+                      {selectedInstitution.status === 'approved' ? '✅ Approved' : 
+                       selectedInstitution.status === 'rejected' ? '❌ Rejected' : 
+                       selectedInstitution.status === 'under_review' ? '⏳ Under Review' : '⏳ Pending'}
+                    </Badge>
+                  </div>
+                </div>
+
+                {/* Basic Information */}
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Basic Information</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <span className="text-gray-600">Institution Type:</span>
+                        <p className="font-medium text-gray-900">{selectedInstitution.basicInformation.institutionType}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Registration Number:</span>
+                        <p className="font-medium text-gray-900">{selectedInstitution.basicInformation.registrationNumber}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Phone:</span>
+                        <p className="font-medium text-gray-900">{selectedInstitution.basicInformation.phone}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Owner Name:</span>
+                        <p className="font-medium text-gray-900">{selectedInstitution.basicInformation.ownerName}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Owner Phone:</span>
+                        <p className="font-medium text-gray-900">{selectedInstitution.basicInformation.ownerPhone}</p>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Submitted:</span>
+                        <p className="font-medium text-gray-900">
+                          {new Date(selectedInstitution.submittedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Address Information */}
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Address</h4>
+                    <div className="bg-gray-50 p-3 rounded-lg text-sm">
+                      <p className="text-gray-700">
+                        {selectedInstitution.basicInformation.address}, {selectedInstitution.basicInformation.city}, 
+                        {selectedInstitution.basicInformation.state} - {selectedInstitution.basicInformation.pincode}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Documents */}
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Submitted Documents</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      {Object.entries(selectedInstitution.documents).map(([key, value]) => {
+                        if (!value || value === 'Not uploaded' || value === 'Not provided') return null;
+                        
+                        const displayName = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                        const isFile = typeof value === 'string' && value.includes('.');
+                        
+                        return (
+                          <div key={key} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                            <div className="flex items-center space-x-2">
+                              <FileText className="h-4 w-4 text-gray-400" />
+                              <span className="text-gray-600">{displayName}:</span>
+                              <span className="font-medium text-gray-900 text-xs truncate max-w-32">
+                                {isFile ? value : value}
+                              </span>
+                            </div>
+                            {isFile && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  // TODO: Implement document download/view
+                                  console.log('View document:', value);
+                                }}
+                                className="ml-2"
+                              >
+                                <Eye className="h-3 w-3 mr-1" />
+                                View
+                              </Button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Institution Details & Facilities */}
+                  {selectedInstitution.institutionDetails && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Institution Details & Facilities</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-600">Establishment Year:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.institutionDetails.establishment_year || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Total Classrooms:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.institutionDetails.total_classrooms || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Classroom Capacity:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.institutionDetails.classroom_capacity || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Total Students:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.institutionDetails.total_current_students || 'Not specified'}</p>
+                        </div>
+                      </div>
+                      
+                      {/* Facilities */}
+                      <div className="mt-3">
+                        <h5 className="font-medium text-gray-700 mb-2">Available Facilities</h5>
+                        <div className="grid grid-cols-3 gap-2 text-xs">
+                          {selectedInstitution.institutionDetails.library_available && <Badge variant="outline">📚 Library</Badge>}
+                          {selectedInstitution.institutionDetails.computer_lab && <Badge variant="outline">💻 Computer Lab</Badge>}
+                          {selectedInstitution.institutionDetails.wifi_available && <Badge variant="outline">📶 WiFi</Badge>}
+                          {selectedInstitution.institutionDetails.parking_available && <Badge variant="outline">🚗 Parking</Badge>}
+                          {selectedInstitution.institutionDetails.cafeteria_available && <Badge variant="outline">🍽️ Cafeteria</Badge>}
+                          {selectedInstitution.institutionDetails.air_conditioning && <Badge variant="outline">❄️ AC</Badge>}
+                          {selectedInstitution.institutionDetails.cctv_security && <Badge variant="outline">📹 CCTV</Badge>}
+                          {selectedInstitution.institutionDetails.wheelchair_accessible && <Badge variant="outline">♿ Wheelchair Access</Badge>}
+                          {selectedInstitution.institutionDetails.projectors_smart_boards && <Badge variant="outline">📽️ Smart Boards</Badge>}
+                          {selectedInstitution.institutionDetails.physics_lab && <Badge variant="outline">🔬 Physics Lab</Badge>}
+                          {selectedInstitution.institutionDetails.chemistry_lab && <Badge variant="outline">🧪 Chemistry Lab</Badge>}
+                          {selectedInstitution.institutionDetails.biology_lab && <Badge variant="outline">🧬 Biology Lab</Badge>}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Academic Programs */}
+                  {selectedInstitution.academicPrograms && selectedInstitution.academicPrograms.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Academic Programs</h4>
+                      <div className="space-y-3">
+                        {selectedInstitution.academicPrograms.map((program, index) => (
+                          <div key={index} className="bg-gray-50 p-3 rounded-lg">
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <span className="text-gray-600">Program Name:</span>
+                                <p className="font-medium text-gray-900">{program.program_name || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Level:</span>
+                                <p className="font-medium text-gray-900">{program.level || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Duration:</span>
+                                <p className="font-medium text-gray-900">{program.duration || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Fee:</span>
+                                <p className="font-medium text-gray-900">{program.fee || 'Not specified'}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Faculty Information */}
+                  {selectedInstitution.faculty && selectedInstitution.faculty.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Faculty & Staff</h4>
+                      <div className="space-y-3">
+                        {selectedInstitution.faculty.map((member, index) => (
+                          <div key={index} className="bg-gray-50 p-3 rounded-lg">
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <span className="text-gray-600">Name:</span>
+                                <p className="font-medium text-gray-900">{member.name || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Designation:</span>
+                                <p className="font-medium text-gray-900">{member.designation || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Qualification:</span>
+                                <p className="font-medium text-gray-900">{member.qualification || 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <span className="text-gray-600">Experience:</span>
+                                <p className="font-medium text-gray-900">{member.experience_years || 'Not specified'} years</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Results & Achievements */}
+                  {selectedInstitution.results && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Results & Achievements</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-600">Board Exam Results:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.results.board_exam_results || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Competitive Exam Results:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.results.competitive_exam_results || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Awards Received:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.results.institution_awards || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Student Achievements:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.results.student_achievements || 'Not specified'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Fee Structure */}
+                  {selectedInstitution.feePolicies && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Fee Structure & Policies</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-600">Admission Fees:</span>
+                          <p className="font-medium text-gray-900">₹{selectedInstitution.feePolicies.admission_fees || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Security Deposit:</span>
+                          <p className="font-medium text-gray-900">₹{selectedInstitution.feePolicies.security_deposit || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Payment Schedule:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.feePolicies.payment_schedule || 'Not specified'}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Refund Policy:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.feePolicies.refund_policy || 'Not specified'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Contact Verification */}
+                  {selectedInstitution.contactVerification && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Contact Verification Status</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-600">Email Verified:</span>
+                          <Badge variant={selectedInstitution.contactVerification.email_verified ? 'default' : 'secondary'}>
+                            {selectedInstitution.contactVerification.email_verified ? '✅ Verified' : '❌ Not Verified'}
+                          </Badge>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Mobile OTP Verified:</span>
+                          <Badge variant={selectedInstitution.contactVerification.mobile_otp_verified ? 'default' : 'secondary'}>
+                            {selectedInstitution.contactVerification.mobile_otp_verified ? '✅ Verified' : '❌ Not Verified'}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Institution Photos */}
+                  {selectedInstitution.photos && selectedInstitution.photos.length > 0 && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Institution Photos</h4>
+                      <div className="grid grid-cols-3 gap-4">
+                        {selectedInstitution.photos.map((photo, index) => (
+                          <div key={index} className="relative">
+                            <img 
+                              src={photo.file_url || photo.photo_url} 
+                              alt={`Institution Photo ${index + 1}`}
+                              className="w-full h-24 object-cover rounded-lg border border-gray-200"
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="absolute top-1 right-1"
+                              onClick={() => {
+                                // TODO: Implement photo view
+                                console.log('View photo:', photo);
+                              }}
+                            >
+                              <Eye className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Admin Notes */}
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Admin Notes</h4>
+                    <textarea
+                      className="w-full p-3 border rounded-lg"
+                      rows={3}
+                      placeholder="Add admin notes here..."
+                      value={selectedInstitution.adminNotes || ''}
+                      onChange={(e) => {
+                        setSelectedInstitution(prev => prev ? { ...prev, adminNotes: e.target.value } : null);
+                      }}
+                    />
+                  </div>
+
+                  {/* Review Information */}
+                  {selectedInstitution.reviewedBy && (
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-2">Review Information</h4>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="text-gray-600">Reviewed By:</span>
+                          <p className="font-medium text-gray-900">{selectedInstitution.reviewedBy}</p>
+                        </div>
+                        <div>
+                          <span className="text-gray-600">Reviewed At:</span>
+                          <p className="font-medium text-gray-900">
+                            {selectedInstitution.reviewedAt ? new Date(selectedInstitution.reviewedAt).toLocaleDateString() : 'N/A'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end space-x-3 pt-4 border-t">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowInstitutionModal(false)}
+                  >
+                    Close
+                  </Button>
+                  {selectedInstitution.status === 'pending' && (
+                    <>
+                      <Button
+                        onClick={() => {
+                          handleInstitutionApprove(selectedInstitution.id);
+                          setShowInstitutionModal(false);
+                        }}
+                        className="bg-green-600 hover:bg-green-700"
+                      >
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                        Approve
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        onClick={() => {
+                          handleInstitutionReject(selectedInstitution.id);
+                          setShowInstitutionModal(false);
+                        }}
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Reject
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

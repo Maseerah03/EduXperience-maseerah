@@ -7,8 +7,17 @@ import SignUpChoice from "@/pages/SignUpChoice";
 import StudentSignUp from "@/pages/StudentSignUp";
 import TutorSignUp from "@/pages/TutorSignUp";
 import InstitutionSignUp from "@/pages/InstitutionSignUp";
+import InstitutionSignupSuccess from "@/pages/InstitutionSignupSuccess";
+import InstitutionSignupNew from './pages/institution-signup-new'
+import InstitutionSignupSuccessNew from './pages/institution-signup/success/[id]'
+import InstitutionSignupComplete from './pages/institution-signup/InstitutionSignupComplete'
+import InstitutionSignupTest from './components/InstitutionSignupTest'
+import { InstitutionSignupProvider } from './contexts/InstitutionSignupContext'
+import InstitutionSignupRouter from './components/InstitutionSignupRouter'
+
 import StudentDashboard from "@/pages/StudentDashboard";
 import TutorDashboard from "@/pages/TutorDashboard";
+import InstitutionDashboard from "@/pages/InstitutionDashboard";
 import NotFound from "@/pages/NotFound";
 import AdminLogin from "@/pages/AdminLogin";
 import AdminDashboard from "@/pages/AdminDashboard";
@@ -36,9 +45,19 @@ function App() {
         <Route path="/signup-choice" element={<SignUpChoice />} />
         <Route path="/student-signup" element={<StudentSignUp />} />
         <Route path="/tutor-signup" element={<TutorSignUp />} />
-        <Route path="/institution-signup" element={<InstitutionSignUp />} />
+        <Route path="/institution-signup/*" element={
+          <InstitutionSignupProvider>
+            <InstitutionSignupRouter />
+          </InstitutionSignupProvider>
+        } />
+        <Route path="/institution-signup/success" element={<InstitutionSignupSuccess />} />
+        <Route path="/institution-signup/complete" element={<InstitutionSignupComplete />} />
+        <Route path="/institution-signup/test" element={<InstitutionSignupTest />} />
+        <Route path="/institution-signup-new" element={<InstitutionSignupNew />} />
+        <Route path="/institution-signup/success/:id" element={<InstitutionSignupSuccessNew />} />
         <Route path="/student-dashboard" element={<StudentDashboard />} />
         <Route path="/tutor-dashboard" element={<TutorDashboard />} />
+        <Route path="/institution-dashboard" element={<InstitutionDashboard />} />
         <Route path="/admin/login" element={<AdminLogin />} />
         <Route 
           path="/admin/dashboard" 
